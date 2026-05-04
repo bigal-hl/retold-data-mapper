@@ -1585,6 +1585,9 @@ class DataMapperConnectionBridge extends libFableServiceProviderBase
 						TargetBeaconName: pOperation.TargetBeaconName || '',
 						ConnectionHash:   pOperation.TargetConnectionHash || '',
 						Entity:           tmpEntity,
+						// Typed ops opt into parallel write chunks (5-way pool).
+						// Mapping (the existing flow) stays at the default 1.
+						Concurrency:      5,
 						AffinityKey:      'data-mapper'
 					  }
 					},
@@ -1689,6 +1692,9 @@ class DataMapperConnectionBridge extends libFableServiceProviderBase
 						TargetBeaconName: pOperation.TargetBeaconName || '',
 						ConnectionHash:   pOperation.TargetConnectionHash || '',
 						Entity:           tmpEntity,
+						// Typed ops opt into parallel write chunks (5-way pool).
+						// Mapping (the existing flow) stays at the default 1.
+						Concurrency:      5,
 						AffinityKey:      'data-mapper'
 					  }
 					},
@@ -1788,6 +1794,9 @@ class DataMapperConnectionBridge extends libFableServiceProviderBase
 						TargetBeaconName: pOperation.TargetBeaconName || '',
 						ConnectionHash:   pOperation.TargetConnectionHash || '',
 						Entity:           tmpEntity,
+						// Typed ops opt into parallel write chunks (5-way pool).
+						// Mapping (the existing flow) stays at the default 1.
+						Concurrency:      5,
 						AffinityKey:      'data-mapper'
 					  }
 					},
@@ -1916,6 +1925,9 @@ class DataMapperConnectionBridge extends libFableServiceProviderBase
 						TargetBeaconName: pOperation.TargetBeaconName || '',
 						ConnectionHash:   pOperation.TargetConnectionHash || '',
 						Entity:           tmpEntity,
+						// Typed ops opt into parallel write chunks (5-way pool).
+						// Mapping (the existing flow) stays at the default 1.
+						Concurrency:      5,
 						AffinityKey:      'data-mapper'
 					  }
 					},

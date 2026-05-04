@@ -327,7 +327,8 @@ class DataMapperBeaconProvider extends libFableServiceProviderBase
 							{ Name: 'Entity',           DataType: 'String', Required: false, Description: 'Target entity name. Informational when Comprehension is supplied; meadow upserts each entity in the comprehension by its key.' },
 							{ Name: 'Comprehension',    DataType: 'Object', Required: false, Description: 'Comprehension { <Entity>: { <GUID>: <record>, ... } }. Preferred input; flows from the BuildComprehension node.' },
 							{ Name: 'Records',          DataType: 'Array',  Required: false, Description: 'Back-compat: bare records array. If provided without Comprehension, will be wrapped into { <Entity>: { <i>: <record> } }.' },
-							{ Name: 'BulkChunkSize',    DataType: 'Number', Required: false, Description: 'Records per bulk Upserts call. Default 500 (tuned for the 100K stress-test target). Lower for very wide rows or slow targets; higher only after profiling. Each chunk is one PUT roundtrip through MeadowProxy.' }
+							{ Name: 'BulkChunkSize',    DataType: 'Number', Required: false, Description: 'Records per bulk Upserts call. Default 500. Each chunk is one PUT roundtrip through MeadowProxy.' },
+							{ Name: 'Concurrency',      DataType: 'Number', Required: false, Description: 'How many bulk Upserts chunks to keep in flight concurrently. Default 1 (preserves the original sequential behavior — backwards-compatible). Clamped to [1, 5]: meadow-endpoints\' /Upserts handler processes its rows strictly serially per request, so client-side parallelism is the only knob for raw throughput, but each worker takes a postgres connection from the target beacon\'s pool — keeping the cap modest avoids starving other tenants of the lake. Compilers (typed-op Write nodes) opt in explicitly; ad-hoc /Upserts callers stay at 1.' }
 						],
 						Handler: function (pWorkItem, pContext, fHandlerCallback)
 						{
@@ -414,28 +415,51 @@ class DataMapperBeaconProvider extends libFableServiceProviderBase
 								// /1.0/<ConnectionHash>/<Entity>/Upserts with the
 								// records ARRAY body. Meadow looks up each row
 								// by GUID<Entity> and decides UPDATE vs INSERT.
-								// Chunked into BulkChunkSize batches so very
-								// large comprehensions don't blow timeouts.
+								// Inside each request, meadow processes rows
+								// strictly serially (eachLimit=1, ~2200 rows/sec
+								// ceiling per request — this is intentional, not a
+								// bug). To raise total throughput we keep N
+								// requests in flight concurrently — each lands on
+								// a separate connection from the lake-databeacon
+								// postgres pool, so they parallelize cleanly.
 								let tmpPath = `/1.0/${tmpConnHash}/${tmpEntity}/Upserts`;
 								let tmpChunkSize = tmpSettings.BulkChunkSize || 500;
+								// Concurrency: default 1 (sequential, original
+								// behavior). Clamped to 1..5 so a misconfiguration
+								// can't pin the lake's connection pool.
+								let tmpConcurrency = Math.max(1, Math.min(5, tmpSettings.Concurrency || 1));
 								let tmpEntityWritten = 0;
 								let tmpEntityErrors  = 0;
 								let tmpChunkOffset = 0;
+								let tmpInFlight = 0;
+								let tmpDoneSignaled = false;
 
-								let fNextChunk = () =>
+								let fSignalEntityDone = () =>
+								{
+									if (tmpDoneSignaled) return;
+									tmpDoneSignaled = true;
+									if (tmpEntityWritten > 0) tmpEntitiesWritten.push(tmpEntity);
+									tmpTotalWritten += tmpEntityWritten;
+									tmpTotalErrors  += tmpEntityErrors;
+									tmpEntityCounts[tmpEntity] = { Written: tmpEntityWritten, Errors: tmpEntityErrors };
+									return fNextEntity();
+								};
+
+								let fStartNextChunk = () =>
 								{
 									if (tmpChunkOffset >= tmpRowArr.length)
 									{
-										if (tmpEntityWritten > 0) tmpEntitiesWritten.push(tmpEntity);
-										tmpTotalWritten += tmpEntityWritten;
-										tmpTotalErrors  += tmpEntityErrors;
-										tmpEntityCounts[tmpEntity] = { Written: tmpEntityWritten, Errors: tmpEntityErrors };
-										return fNextEntity();
+										// No more chunks to dispatch — if nothing's
+										// in flight either, we're done with this entity.
+										if (tmpInFlight === 0) fSignalEntityDone();
+										return;
 									}
-									let tmpChunk = tmpRowArr.slice(tmpChunkOffset, tmpChunkOffset + tmpChunkSize);
+									let tmpStart = tmpChunkOffset;
+									let tmpChunk = tmpRowArr.slice(tmpStart, tmpStart + tmpChunkSize);
 									let tmpChunkLen = tmpChunk.length;
 									tmpChunkOffset += tmpChunkLen;
 									let tmpBodyStr = JSON.stringify(tmpChunk);
+									tmpInFlight++;
 
 									tmpSelf._dispatch(
 										{
@@ -456,7 +480,7 @@ class DataMapperBeaconProvider extends libFableServiceProviderBase
 											if (pErr)
 											{
 												tmpEntityErrors += tmpChunkLen;
-												tmpErrorLog.push({ Entity: tmpEntity, Chunk: tmpChunkOffset - tmpChunkLen, Error: pErr.message || String(pErr) });
+												tmpErrorLog.push({ Entity: tmpEntity, Chunk: tmpStart, Error: pErr.message || String(pErr) });
 											}
 											else
 											{
@@ -466,7 +490,7 @@ class DataMapperBeaconProvider extends libFableServiceProviderBase
 												{
 													tmpEntityErrors += tmpChunkLen;
 													let tmpSnippet = (typeof tmpOut.Body === 'string') ? tmpOut.Body.slice(0, 160) : '';
-													tmpErrorLog.push({ Entity: tmpEntity, Chunk: tmpChunkOffset - tmpChunkLen, Error: `HTTP ${tmpStatus}: ${tmpSnippet}` });
+													tmpErrorLog.push({ Entity: tmpEntity, Chunk: tmpStart, Error: `HTTP ${tmpStatus}: ${tmpSnippet}` });
 												}
 												else
 												{
@@ -476,10 +500,29 @@ class DataMapperBeaconProvider extends libFableServiceProviderBase
 													tmpEntityWritten += tmpChunkLen;
 												}
 											}
-											fNextChunk();
+											tmpInFlight--;
+											// Refill the worker pool: try to start a
+											// fresh chunk to replace this one. If
+											// no more work AND nothing in flight,
+											// we're done.
+											if (tmpChunkOffset < tmpRowArr.length)
+											{
+												fStartNextChunk();
+											}
+											else if (tmpInFlight === 0)
+											{
+												fSignalEntityDone();
+											}
 										});
 								};
-								fNextChunk();
+
+								// Prime the pool with up to BulkConcurrency
+								// in-flight chunks. The "if more work" check
+								// inside fStartNextChunk handles the tail
+								// where we have fewer chunks left than workers.
+								let tmpPrime = Math.min(tmpConcurrency, Math.ceil(tmpRowArr.length / tmpChunkSize));
+								if (tmpPrime === 0) return fSignalEntityDone();
+								for (let p = 0; p < tmpPrime; p++) fStartNextChunk();
 							};
 							fNextEntity();
 						}
