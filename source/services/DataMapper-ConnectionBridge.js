@@ -1319,7 +1319,22 @@ class DataMapperConnectionBridge extends libFableServiceProviderBase
 							_self._request('POST', '/Operation/' + pUVHash + '/Trigger', {},
 								(pTrigErr, pManifest) =>
 								{
-									if (pTrigErr) return _self._sendError(pResponse, 502, 'UV /Trigger failed: ' + pTrigErr.message, fNext);
+									if (pTrigErr)
+									{
+										// Cache-stale recovery: UV restarted (or
+										// otherwise lost the graph) and our
+										// cached hash isn't registered there
+										// anymore. Recompile + re-register +
+										// retry the trigger once. The cache
+										// gets refreshed in the cache-write
+										// path of the recompile branch below.
+										if (pCacheHit && /not found/i.test(pTrigErr.message || ''))
+										{
+											_self.fable.log.info('run-operation: cached UV graph ' + pUVHash + ' missing — recompiling and retrying.');
+											return fRegisterAndTrigger();
+										}
+										return _self._sendError(pResponse, 502, 'UV /Trigger failed: ' + pTrigErr.message, fNext);
+									}
 									pResponse.send({
 										Success:        pManifest && (pManifest.Status === 'Complete'),
 										OperationHash:  pUVHash,
@@ -1336,41 +1351,44 @@ class DataMapperConnectionBridge extends libFableServiceProviderBase
 								});
 						};
 
+						let fRegisterAndTrigger = () =>
+						{
+							_self._request('POST', '/Operation', tmpGraph,
+								(pPostErr, pCreated) =>
+								{
+									if (pPostErr) return _self._sendError(pResponse, 502, 'UV /Operation failed: ' + pPostErr.message, fNext);
+									let tmpHash = (pCreated && pCreated.Hash) || (tmpGraph && tmpGraph.Hash);
+									if (!tmpHash) return _self._sendError(pResponse, 502, 'UV /Operation returned no Hash', fNext);
+									// Persist the new compiled hash on the
+									// OperationConfig row via PUT-by-id (in-
+									// place; IDOperationConfig stable). Best-
+									// effort: if the persist fails we still
+									// trigger; the next run just re-registers.
+									let tmpUpdate = {
+										IDOperationConfig:           pOperation.IDOperationConfig,
+										CompiledOperationHash:       tmpHash,
+										CompiledOperationConfigHash: tmpCfgHash
+									};
+									beaconRequestEx('configs-databeacon', 'PUT',
+										'/1.0/platform-configs/OperationConfig/' + pOperation.IDOperationConfig, tmpUpdate,
+										(pPutErr) =>
+										{
+											if (pPutErr) _self.fable.log.warn('run-operation: cache-persist failed: ' + pPutErr.message + ' (next run will re-register)');
+											return fTrigger(tmpHash, false);
+										});
+								});
+						};
+
 						if (tmpCacheHit)
 						{
 							// Reuse the cached UV graph hash — no /Operation POST.
 							return fTrigger(pOperation.CompiledOperationHash, true);
 						}
 
-						_self._request('POST', '/Operation', tmpGraph,
-							(pPostErr, pCreated) =>
-							{
-								if (pPostErr) return _self._sendError(pResponse, 502, 'UV /Operation failed: ' + pPostErr.message, fNext);
-								let tmpHash = (pCreated && pCreated.Hash) || (tmpGraph && tmpGraph.Hash);
-								if (!tmpHash) return _self._sendError(pResponse, 502, 'UV /Operation returned no Hash', fNext);
-
-								// Persist the new compiled hash on the
-								// OperationConfig row so subsequent runs (and
-								// restarts) can cache-hit. PUT-by-id is now
-								// in-place; the IDOperationConfig stays
-								// stable across the update. Best-effort: if
-								// the persist fails we still trigger; the
-								// next run will just re-register.
-								let tmpUpdate = {
-									IDOperationConfig:           pOperation.IDOperationConfig,
-									CompiledOperationHash:       tmpHash,
-									CompiledOperationConfigHash: tmpCfgHash
-								};
-								beaconRequestEx('configs-databeacon', 'PUT',
-									'/1.0/platform-configs/OperationConfig/' + pOperation.IDOperationConfig, tmpUpdate,
-									(pPutErr) =>
-									{
-										if (pPutErr) _self.fable.log.warn('run-operation: cache-persist failed: ' + pPutErr.message + ' (next run will re-register)');
-										return fTrigger(tmpHash, false);
-									});
-							});
+						return fRegisterAndTrigger();
 					});
 			});
+
 
 			// POST /mapper/uv/run-chain/:idOrHash
 			//

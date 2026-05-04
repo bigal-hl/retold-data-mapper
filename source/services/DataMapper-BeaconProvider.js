@@ -540,39 +540,20 @@ class DataMapperBeaconProvider extends libFableServiceProviderBase
 										let tmpOrphans = tmpExisting.filter((r) => !tmpLiveSet.has(r.guid));
 										if (tmpOrphans.length === 0) return fFinalizeEntity();
 
-										// Soft-delete orphans via the bulk
-										// Upsert path with `Deleted: true`
-										// on each row. Why this and not
-										// `DELETE /Entity/:id`:
-										//
-										// meadow's UPDATE writes `Deleted=1`
-										// (integer) for portability, but
-										// retold-databeacon's EnsureSchema
-										// descriptor maps `Type: Deleted` →
-										// `Boolean`, so postgres tables get
-										// a `boolean` column. DELETE-by-id
-										// fails with `42804: column "Deleted"
-										// is of type boolean but expression
-										// is of type integer`. Bulk-Upsert
-										// with `{Deleted:true}` body sends
-										// the correct type and the column
-										// flips. (Fix-the-descriptor is
-										// retold-databeacon work, separate
-										// from this session.)
-										//
-										// Meadow's response counts these as
-										// "errored" because the success
-										// counter only increments on a non-
-										// deleted ack record. We trust the
-										// chunk size as the authoritative
-										// count — re-reading the orphans
-										// after the purge confirms the
-										// Deleted=true flip.
-										let tmpPurgePath = `/1.0/${tmpConnHash}/${tmpEntity}/Upserts`;
+										// Soft-delete orphans via meadow's
+										// per-row DELETE-by-id. Concurrent
+										// N at a time, mirroring the Upsert
+										// pool. Meadow's UPDATE flips the
+										// Deleted column on the row; the row
+										// stays in the table for forensics +
+										// idempotent re-runs (next time the
+										// GUID matches a live row, meadow's
+										// CollisionRename behavior renames
+										// the soft-deleted row's GUID so the
+										// new INSERT can take the slot).
 										let tmpOrphanIdx = 0;
 										let tmpOrphanInFlight = 0;
 										let tmpOrphanDoneSignaled = false;
-										let tmpOrphanChunkSize = tmpChunkSize;
 
 										let fOrphanDone = () =>
 										{
@@ -581,53 +562,45 @@ class DataMapperBeaconProvider extends libFableServiceProviderBase
 											return fFinalizeEntity();
 										};
 
-										let fStartNextOrphanChunk = () =>
+										let fStartNextOrphan = () =>
 										{
 											if (tmpOrphanIdx >= tmpOrphans.length)
 											{
 												if (tmpOrphanInFlight === 0) fOrphanDone();
 												return;
 											}
-											let tmpStart = tmpOrphanIdx;
-											let tmpChunk = tmpOrphans.slice(tmpStart, tmpStart + tmpOrphanChunkSize);
-											tmpOrphanIdx += tmpChunk.length;
+											let tmpO = tmpOrphans[tmpOrphanIdx++];
 											tmpOrphanInFlight++;
-											let tmpRows = tmpChunk.map((o) =>
-											{
-												let tmpRec = { Deleted: true };
-												tmpRec[tmpIDName]   = o.id;
-												tmpRec[tmpGUIDName] = o.guid;
-												return tmpRec;
-											});
-											let tmpBodyStr = JSON.stringify(tmpRows);
+											let tmpDelPath = `/1.0/${tmpConnHash}/${tmpEntity}/${tmpO.id}`;
 											tmpSelf._dispatch(
 												{
 													Capability: 'MeadowProxy',
 													Action:     'Request',
-													Settings: { Method: 'PUT', Path: tmpPurgePath, Body: tmpBodyStr, RemoteUser: '' },
+													Settings: { Method: 'DELETE', Path: tmpDelPath, Body: '', RemoteUser: '' },
 													AffinityKey: tmpBeaconName,
-													TimeoutMs: 60000
+													TimeoutMs: 30000
 												},
 												(pErr, pResult) =>
 												{
-													let tmpOut = (pResult && pResult.Outputs) || pResult || {};
-													let tmpStatus = tmpOut.Status;
-													if (pErr || (typeof tmpStatus === 'number' && tmpStatus >= 400))
+													if (pErr)
 													{
-														tmpOrphanErrors += tmpChunk.length;
+														tmpOrphanErrors++;
 													}
 													else
 													{
-														tmpOrphansDeleted += tmpChunk.length;
+														let tmpOut = (pResult && pResult.Outputs) || pResult || {};
+														let tmpStatus = tmpOut.Status;
+														if (typeof tmpStatus === 'number' && tmpStatus >= 400) tmpOrphanErrors++;
+														else tmpOrphansDeleted++;
 													}
 													tmpOrphanInFlight--;
-													if (tmpOrphanIdx < tmpOrphans.length) fStartNextOrphanChunk();
+													if (tmpOrphanIdx < tmpOrphans.length) fStartNextOrphan();
 													else if (tmpOrphanInFlight === 0) fOrphanDone();
 												});
 										};
 
-										let tmpOrphanPrime = Math.min(tmpConcurrency, Math.ceil(tmpOrphans.length / tmpOrphanChunkSize));
-										for (let p = 0; p < tmpOrphanPrime; p++) fStartNextOrphanChunk();
+										let tmpOrphanPrime = Math.min(tmpConcurrency, tmpOrphans.length);
+										for (let p = 0; p < tmpOrphanPrime; p++) fStartNextOrphan();
 									};
 
 									fReadExisting();
