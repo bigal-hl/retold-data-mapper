@@ -524,6 +524,24 @@ class RetoldDataMapper extends libFableServiceProviderBase
 						{
 							this.fable.log.warn(`DataMapper bootstrap deferred: ${pBootErr.message}. Retrigger via POST /mapper/admin/bootstrap-configs once configs-databeacon is reachable.`);
 						}
+						// Provision additional beacon connections (lake/opdb/etc.)
+						// declared via RETOLD_DATA_MAPPER_BOOTSTRAP_CONNECTIONS.
+						// Runs after configs is up so the eager-register pass
+						// has somewhere to read OperationConfigs from. Failures
+						// here are warn-only — operator can fix the env var
+						// and bounce, or wire connections via the beacon UIs.
+						if (typeof tmpBridge.bootstrapAdditionalBeacons === 'function')
+						{
+							tmpBridge.bootstrapAdditionalBeacons((pAddErr) =>
+							{
+								if (pAddErr)
+								{
+									this.fable.log.warn(`DataMapper bootstrap: additional-beacon provisioning returned an error — ${pAddErr.message}.`);
+								}
+								return fCallback(null);
+							});
+							return;
+						}
 						return fCallback(null);
 					});
 					return;

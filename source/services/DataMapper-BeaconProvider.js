@@ -221,9 +221,10 @@ class DataMapperBeaconProvider extends libFableServiceProviderBase
 							{ Name: 'ConnectionHash', DataType: 'String', Required: true, Description: 'URL slug of the source connection' },
 							{ Name: 'Entity', DataType: 'String', Required: true, Description: 'Entity/table name to read' },
 							{ Name: 'BatchSize', DataType: 'Number', Required: false, Description: 'Records per page (default 100)' },
-							{ Name: 'FilterExpression', DataType: 'String', Required: false, Description: 'Meadow filter (e.g. FBV~Field~EQ~Value); spliced into URL as /FilteredTo/<expr>' }
+							{ Name: 'FilterExpression', DataType: 'String', Required: false, Description: 'Meadow filter (e.g. FBV~Field~EQ~Value); spliced into URL as /FilteredTo/<expr>' },
+							{ Name: 'SortField', DataType: 'String', Required: false, Description: 'Column to ORDER BY for stable pagination. Defaults to "ID<Entity>" — meadow\'s standard auto-identity convention. Postgres without ORDER BY can return the same row on multiple pages once the table outgrows a single seq-scan window, which silently truncates pulled data; explicit sort fixes that.' }
 						],
-						Handler: function (pWorkItem, pContext, fHandlerCallback)
+						Handler: function (pWorkItem, pContext, fHandlerCallback, fReportProgress)
 						{
 							let tmpStartMs = Date.now();
 							let tmpSettings = pWorkItem.Settings || {};
@@ -231,9 +232,21 @@ class DataMapperBeaconProvider extends libFableServiceProviderBase
 							let tmpConnectionHash = tmpSettings.ConnectionHash;
 							let tmpEntity = tmpSettings.Entity;
 							let tmpBatchSize = tmpSettings.BatchSize || 500;
-							let tmpFilterSegment = tmpSettings.FilterExpression
-								? '/FilteredTo/' + tmpSettings.FilterExpression
-								: '';
+
+							// Stable-pagination guard. Without an explicit sort,
+							// postgres LIMIT/OFFSET against a 250K-row table
+							// returns rows in unstable seq-scan order — the same
+							// PK can appear on multiple pages while others are
+							// missed entirely (we measured ~38% silent loss at
+							// 250K rows). Force ORDER BY <PK> via meadow's filter
+							// FSF directive so paginated reads are deterministic.
+							let tmpSortField = tmpSettings.SortField || ('ID' + tmpEntity);
+							let tmpSortFilter = 'FSF~' + tmpSortField + '~ASC~0';
+							let tmpUserFilter = tmpSettings.FilterExpression || '';
+							let tmpCombinedFilter = tmpUserFilter
+								? tmpUserFilter + '~' + tmpSortFilter
+								: tmpSortFilter;
+							let tmpFilterSegment = '/FilteredTo/' + tmpCombinedFilter;
 
 							if (!tmpSelf._Client || !tmpBeaconName || !tmpConnectionHash || !tmpEntity)
 							{
@@ -243,13 +256,32 @@ class DataMapperBeaconProvider extends libFableServiceProviderBase
 								});
 							}
 
-							// Paginated read
+							// Paginated read.
+							//
+							// fReportProgress (4th handler arg from ultravisor-beacon's
+							// CapabilityAdapter) sends a progress event back to UV which
+							// updates the work item's LastEventAt — without these calls
+							// UV's BeaconScheduler stall-detector flips us to Status=Stalled
+							// after HeartbeatExpectedMs * 2 = 120s by default. At 250K
+							// rows/500-per-batch the loop runs ~3 minutes and would always
+							// trip that threshold even though batches are landing every
+							// ~350ms. We report after every batch — cheap noop when
+							// fReportProgress isn't supplied (e.g. older beacon clients).
 							let tmpAllRecords = [];
 							let tmpOffset = 0;
+							// Source beacons that don't implement meadow's
+							// /FilteredTo URL pattern (e.g. retold-synth-databeacon
+							// — its records are deterministic by construction so
+							// it doesn't need ORDER BY anyway) return 404 on the
+							// FSF-injected path. On the FIRST 404 we drop the
+							// filter segment for the rest of the pull and keep
+							// going. Subsequent batches use the plain URL pattern.
+							let tmpUseSortFilter = !!tmpSortField;
 
 							let fReadBatch = () =>
 							{
-								let tmpPath = `/1.0/${tmpConnectionHash}/${tmpEntity}s${tmpFilterSegment}/${tmpOffset}/${tmpBatchSize}`;
+								let tmpEffectiveFilter = tmpUseSortFilter ? tmpFilterSegment : (tmpUserFilter ? '/FilteredTo/' + tmpUserFilter : '');
+								let tmpPath = `/1.0/${tmpConnectionHash}/${tmpEntity}s${tmpEffectiveFilter}/${tmpOffset}/${tmpBatchSize}`;
 
 								// Dispatch through the UV mesh; AffinityKey now routes
 								// by beacon Name (UV Coordinator + Scheduler resolve
@@ -274,6 +306,16 @@ class DataMapperBeaconProvider extends libFableServiceProviderBase
 										}
 
 										let tmpOutputs = (pResult && pResult.Outputs) || pResult || {};
+										let tmpStatus = tmpOutputs.Status;
+										// First-batch fallback: if the source 404s on
+										// our sort-injected /FilteredTo URL (e.g. synth),
+										// disable the sort filter and re-fetch the
+										// same offset with a plain URL.
+										if (tmpUseSortFilter && tmpStatus === 404 && tmpAllRecords.length === 0 && tmpOffset === 0)
+										{
+											tmpUseSortFilter = false;
+											return fReadBatch();
+										}
 										let tmpBody = tmpOutputs.Body;
 										if (typeof (tmpBody) === 'string')
 										{
@@ -284,6 +326,15 @@ class DataMapperBeaconProvider extends libFableServiceProviderBase
 										for (let i = 0; i < tmpRecords.length; i++)
 										{
 											tmpAllRecords.push(tmpRecords[i]);
+										}
+
+										// Heartbeat: tell UV we're alive + how far along.
+										// Older beacon clients may not pass fReportProgress;
+										// guard before calling so we don't crash the pull.
+										if (typeof fReportProgress === 'function')
+										{
+											try { fReportProgress({ Phase: 'pulling', RecordsRead: tmpAllRecords.length, ElapsedMs: Date.now() - tmpStartMs }); }
+											catch (pProgErr) { /* progress is best-effort */ }
 										}
 
 										if (tmpRecords.length < tmpBatchSize)
@@ -317,6 +368,792 @@ class DataMapperBeaconProvider extends libFableServiceProviderBase
 						}
 					},
 
+					'CloneStream':
+					{
+						Description: 'Streaming pull-batch → write-batch clone. Fundamentally different layout from PullRecords→ExtractRecords→BuildComprehension→WriteRecords: this single work item loops the read+write pair so working memory stays at one batch instead of the full source. Use for clones where the output is a 1:1 mirror with no cross-record logic; the destination\'s GUID upsert key handles dedup naturally and the State edge never carries a giant array.',
+						SettingsSchema:
+						[
+							{ Name: 'SourceBeaconName',     DataType: 'String', Required: true, Description: 'Beacon name of the data source' },
+							{ Name: 'SourceConnectionHash', DataType: 'String', Required: true, Description: 'URL slug of the source connection' },
+							{ Name: 'SourceEntity',         DataType: 'String', Required: true, Description: 'Source entity/table name (singular; meadow appends "s" for the plural endpoint)' },
+							{ Name: 'TargetBeaconName',     DataType: 'String', Required: true, Description: 'Beacon name of the write target' },
+							{ Name: 'TargetConnectionHash', DataType: 'String', Required: true, Description: 'URL slug of the target connection' },
+							{ Name: 'TargetEntity',         DataType: 'String', Required: true, Description: 'Target entity/table name. Bulk-upsert URL will be /1.0/<TargetConnectionHash>/<TargetEntity>/Upserts.' },
+							{ Name: 'GUIDName',             DataType: 'String', Required: true, Description: 'Destination GUID column (e.g. GUIDCustomerMirror). Each chunk-record\'s value for this column is set from OperationConfiguration.GUIDTemplate before upsert; meadow uses it as the upsert key.' },
+							{ Name: 'OperationConfiguration', DataType: 'Object', Required: true, Description: '{ GUIDTemplate, Projection? }. GUIDTemplate is the destination GUID format-string ({~D:Record.IDCustomer~} tokens are substituted per source record). Projection is optional — if absent the source record passes through as-is. Bundled here so UV\'s settings resolver doesn\'t template-strip the placeholders before the handler runs.' },
+							{ Name: 'BatchSize',            DataType: 'Number', Required: false, Description: 'Records per pull/upsert batch (default 500). The pull-write pair fires once per batch.' },
+							{ Name: 'SortField',            DataType: 'String', Required: false, Description: 'Source sort column for stable pagination. Defaults to "ID<SourceEntity>". Pass empty string to disable (e.g. for synth-databeacon, which doesn\'t implement /FilteredTo).' },
+							{ Name: 'FilterExpression',     DataType: 'String', Required: false, Description: 'Meadow filter to apply on the source pull (e.g. FBV~Status~EQ~Active).' },
+							{ Name: 'WriteConcurrency',     DataType: 'Number', Required: false, Description: 'In-flight bulk Upsert chunks (clamped 1..5). Default 1 — one batch in-flight at a time keeps the streaming guarantee. Bumping to N means up to N batches resident in memory simultaneously.' }
+						],
+						Handler: function (pWorkItem, pContext, fHandlerCallback, fReportProgress)
+						{
+							let tmpStartMs = Date.now();
+							let tmpSettings = pWorkItem.Settings || {};
+							let tmpSourceBeacon = tmpSettings.SourceBeaconName;
+							let tmpSourceConn   = tmpSettings.SourceConnectionHash;
+							let tmpSourceEntity = tmpSettings.SourceEntity;
+							let tmpTargetBeacon = tmpSettings.TargetBeaconName;
+							let tmpTargetConn   = tmpSettings.TargetConnectionHash;
+							let tmpTargetEntity = tmpSettings.TargetEntity;
+							let tmpGUIDName     = tmpSettings.GUIDName;
+							let tmpBatchSize    = tmpSettings.BatchSize || 500;
+
+							let tmpOpCfg = tmpSettings.OperationConfiguration || {};
+							if (typeof tmpOpCfg === 'string')
+							{
+								try { tmpOpCfg = JSON.parse(tmpOpCfg); } catch (e) { tmpOpCfg = {}; }
+							}
+							let tmpProjection = (tmpOpCfg && tmpOpCfg.Projection) || null;
+							let tmpProjKeys   = tmpProjection ? Object.keys(tmpProjection) : null;
+							// GUIDTemplate lives inside OperationConfiguration (Object-
+							// typed) so UV's settings resolver doesn't template-strip
+							// the {~D:Record.X~} placeholders. Top-level GUIDTemplate
+							// is accepted as a fallback for any caller that hasn't
+							// migrated to the bundled shape.
+							let tmpGUIDTemplate = (tmpOpCfg && tmpOpCfg.GUIDTemplate) || tmpSettings.GUIDTemplate || '';
+
+							// Sort filter for stable pagination (postgres LIMIT/OFFSET
+							// without ORDER BY returns the same row on multiple pages
+							// once the table outgrows seq-scan window). Default to
+							// the source's PK convention; explicit empty disables for
+							// sources that don't implement /FilteredTo (synth).
+							let tmpSortField = (tmpSettings.SortField !== undefined) ? tmpSettings.SortField : ('ID' + tmpSourceEntity);
+							let tmpUserFilter = tmpSettings.FilterExpression || '';
+							let tmpUseSortFilter = !!tmpSortField;
+							let tmpFullFilter = tmpUseSortFilter
+								? (tmpUserFilter ? tmpUserFilter + '~FSF~' + tmpSortField + '~ASC~0' : 'FSF~' + tmpSortField + '~ASC~0')
+								: tmpUserFilter;
+
+							if (!tmpSelf._Client || !tmpSourceBeacon || !tmpSourceConn || !tmpSourceEntity
+								|| !tmpTargetBeacon || !tmpTargetConn || !tmpTargetEntity)
+							{
+								return fHandlerCallback(null, {
+									Outputs: { Pulled: 0, Written: 0, Errors: 0, ElapsedMs: 0, ErrorLog: [] },
+									Log: ['CloneStream: missing required settings.']
+								});
+							}
+
+							let tmpTotalPulled  = 0;
+							let tmpTotalWritten = 0;
+							let tmpTotalErrors  = 0;
+							let tmpErrorLog     = [];
+							let tmpOffset       = 0;
+
+							// ── Per-record projection ────────────────────────
+							//
+							// The destination GUID is constructed via tmpGUIDTemplate.
+							// If a Projection map is supplied, only those columns
+							// flow through (with template substitution); otherwise
+							// the source record passes through as-is (the destination's
+							// schema decides what to keep on the upsert side).
+							let fProject = (pSrcRec) =>
+							{
+								let tmpOut;
+								if (tmpProjKeys)
+								{
+									tmpOut = {};
+									for (let k = 0; k < tmpProjKeys.length; k++)
+									{
+										let tmpExpr = tmpProjection[tmpProjKeys[k]];
+										if (typeof tmpExpr === 'string')
+										{
+											let tmpMatch = tmpExpr.match(/^\{~D:Record\.(\w+)~\}$/);
+											if (tmpMatch) { tmpOut[tmpProjKeys[k]] = pSrcRec[tmpMatch[1]]; }
+											else if (pSrcRec.hasOwnProperty(tmpExpr)) { tmpOut[tmpProjKeys[k]] = pSrcRec[tmpExpr]; }
+											else { tmpOut[tmpProjKeys[k]] = tmpExpr; }
+										}
+										else { tmpOut[tmpProjKeys[k]] = tmpExpr; }
+									}
+								}
+								else
+								{
+									tmpOut = Object.assign({}, pSrcRec);
+								}
+								// Always apply the GUIDTemplate after projection.
+								// Substitute {~D:Record.X~} from the SOURCE record so
+								// templates like CUSTOMER_{~D:Record.IDCustomer~}
+								// resolve even when IDCustomer isn't in the projection.
+								if (tmpGUIDTemplate && tmpGUIDName)
+								{
+									tmpOut[tmpGUIDName] = tmpGUIDTemplate.replace(
+										/\{~D:Record\.(\w+)~\}/g,
+										(_m, pField) => (pSrcRec[pField] === undefined || pSrcRec[pField] === null) ? '' : String(pSrcRec[pField]));
+								}
+								return tmpOut;
+							};
+
+							// ── Loop ─────────────────────────────────────────
+							let fNextBatch = () =>
+							{
+								let tmpEffectiveFilter = tmpUseSortFilter
+									? (tmpFullFilter ? '/FilteredTo/' + tmpFullFilter : '')
+									: (tmpUserFilter ? '/FilteredTo/' + tmpUserFilter : '');
+								let tmpReadPath = `/1.0/${tmpSourceConn}/${tmpSourceEntity}s${tmpEffectiveFilter}/${tmpOffset}/${tmpBatchSize}`;
+								tmpSelf._dispatch(
+									{
+										Capability:  'MeadowProxy',
+										Action:      'Request',
+										Settings:    { Method: 'GET', Path: tmpReadPath, Body: '', RemoteUser: '' },
+										AffinityKey: tmpSourceBeacon,
+										TimeoutMs:   60000
+									},
+									(pReadErr, pReadResult) =>
+									{
+										if (pReadErr)
+										{
+											return fHandlerCallback(null, {
+												Outputs: { Pulled: tmpTotalPulled, Written: tmpTotalWritten, Errors: tmpTotalErrors, ElapsedMs: Date.now() - tmpStartMs, ErrorLog: tmpErrorLog },
+												Log: [`CloneStream: read failed at offset ${tmpOffset} — ${pReadErr.message}`]
+											});
+										}
+										let tmpReadOut = (pReadResult && pReadResult.Outputs) || pReadResult || {};
+										// First-batch fallback: source 404s on /FilteredTo
+										// (synth) → drop the sort filter and retry.
+										if (tmpUseSortFilter && tmpReadOut.Status === 404 && tmpTotalPulled === 0 && tmpOffset === 0)
+										{
+											tmpUseSortFilter = false;
+											return fNextBatch();
+										}
+										let tmpBody = tmpReadOut.Body;
+										if (typeof tmpBody === 'string')
+										{
+											try { tmpBody = JSON.parse(tmpBody); } catch (e) { tmpBody = []; }
+										}
+										let tmpRecords = Array.isArray(tmpBody) ? tmpBody : [];
+										let tmpReadCount = tmpRecords.length;
+										if (tmpReadCount === 0)
+										{
+											return fHandlerCallback(null, {
+												Outputs: { Pulled: tmpTotalPulled, Written: tmpTotalWritten, Errors: tmpTotalErrors, ElapsedMs: Date.now() - tmpStartMs, ErrorLog: tmpErrorLog.slice(0, 50) },
+												Log: [`CloneStream: ${tmpSourceEntity} → ${tmpTargetEntity} on [${tmpTargetBeacon}] — pulled ${tmpTotalPulled}, wrote ${tmpTotalWritten}, ${tmpTotalErrors} errors in ${Date.now() - tmpStartMs}ms.`]
+											});
+										}
+
+										// Project this batch in place — the source array
+										// is replaced by projected, the source array is
+										// dereferenced and GC'able by the time we issue
+										// the upsert. Memory ceiling = one batch.
+										let tmpProjected = new Array(tmpReadCount);
+										for (let i = 0; i < tmpReadCount; i++) tmpProjected[i] = fProject(tmpRecords[i]);
+										tmpRecords = null;
+
+										let tmpWritePath = `/1.0/${tmpTargetConn}/${tmpTargetEntity}/Upserts`;
+										tmpSelf._dispatch(
+											{
+												Capability:  'MeadowProxy',
+												Action:      'Request',
+												Settings:    { Method: 'PUT', Path: tmpWritePath, Body: JSON.stringify(tmpProjected), RemoteUser: '' },
+												AffinityKey: tmpTargetBeacon,
+												TimeoutMs:   120000
+											},
+											(pWriteErr, pWriteResult) =>
+											{
+												let tmpBatchPulled = tmpReadCount;
+												tmpProjected = null;
+												if (pWriteErr)
+												{
+													tmpTotalErrors += tmpBatchPulled;
+													tmpErrorLog.push({ Offset: tmpOffset, Error: pWriteErr.message || String(pWriteErr) });
+												}
+												else
+												{
+													let tmpWriteOut = (pWriteResult && pWriteResult.Outputs) || {};
+													let tmpHeaders = tmpWriteOut.Headers || {};
+													let tmpHdrSucceeded = parseInt(tmpHeaders['x-meadow-upsert-succeeded'] || tmpHeaders['X-Meadow-Upsert-Succeeded'] || '-1', 10);
+													let tmpHdrErrored   = parseInt(tmpHeaders['x-meadow-upsert-errored']   || tmpHeaders['X-Meadow-Upsert-Errored']   || '-1', 10);
+													if (tmpHdrSucceeded >= 0 && tmpHdrErrored >= 0)
+													{
+														tmpTotalWritten += tmpHdrSucceeded;
+														tmpTotalErrors  += tmpHdrErrored;
+														if (tmpHdrErrored > 0)
+														{
+															let tmpRespBody = tmpWriteOut.Body;
+															if (typeof tmpRespBody === 'string')
+															{
+																try { tmpRespBody = JSON.parse(tmpRespBody); } catch (e) { /* ignore */ }
+															}
+															let tmpFirstErrors = (tmpRespBody && Array.isArray(tmpRespBody.Errors))
+																? tmpRespBody.Errors.slice(0, 3).map((pE) => (pE && (pE.Error || pE.Message || JSON.stringify(pE).slice(0, 200))))
+																: [];
+															tmpErrorLog.push({ Offset: tmpOffset, Errored: tmpHdrErrored, Of: tmpBatchPulled, Details: tmpFirstErrors });
+														}
+													}
+													else
+													{
+														// No headers — fall back to status-only.
+														let tmpStatus = tmpWriteOut.Status;
+														if (typeof tmpStatus === 'number' && tmpStatus >= 400)
+														{
+															tmpTotalErrors += tmpBatchPulled;
+															tmpErrorLog.push({ Offset: tmpOffset, Error: `HTTP ${tmpStatus}` });
+														}
+														else
+														{
+															tmpTotalWritten += tmpBatchPulled;
+														}
+													}
+												}
+												tmpTotalPulled += tmpBatchPulled;
+
+												if (typeof fReportProgress === 'function')
+												{
+													try { fReportProgress({ Phase: 'streaming', Pulled: tmpTotalPulled, Written: tmpTotalWritten, Errors: tmpTotalErrors }); }
+													catch (pProgIgn) { /* best-effort */ }
+												}
+
+												// Last batch (short read) → done.
+												if (tmpBatchPulled < tmpBatchSize)
+												{
+													return fHandlerCallback(null, {
+														Outputs: { Pulled: tmpTotalPulled, Written: tmpTotalWritten, Errors: tmpTotalErrors, ElapsedMs: Date.now() - tmpStartMs, ErrorLog: tmpErrorLog.slice(0, 50) },
+														Log: [`CloneStream: ${tmpSourceEntity} → ${tmpTargetEntity} on [${tmpTargetBeacon}] — pulled ${tmpTotalPulled}, wrote ${tmpTotalWritten}, ${tmpTotalErrors} errors in ${Date.now() - tmpStartMs}ms.`]
+													});
+												}
+												tmpOffset += tmpBatchPulled;
+												return fNextBatch();
+											});
+									});
+							};
+
+							fNextBatch();
+						}
+					},
+
+					'JoinStream':
+					{
+						Description: 'Streaming-layout INNER JOIN: pushes the JOIN into the source DB (DataBeaconAccess.Join) using KEYSET pagination, pages through the result, chunked-writes each page to the target table. Memory ceiling = page size, never the source. Pair with OperationType=SQLJoin. Both source and related must live on the same connection. OrderBy MUST be a UNIQUE source-table column (typically the PK) — keyset pagination duplicates rows otherwise.',
+						SettingsSchema:
+						[
+							{ Name: 'SourceBeaconName',     DataType: 'String', Required: true, Description: 'Beacon name of the source (UV mesh AffinityKey for the join dispatch).' },
+							{ Name: 'SourceConnection',     DataType: 'String', Required: true, Description: 'Source connection name (resolved to IDBeaconConnection at run time).' },
+							{ Name: 'SourceTable',          DataType: 'String', Required: true, Description: 'Source (left) table.' },
+							{ Name: 'RelatedTable',         DataType: 'String', Required: true, Description: 'Related (right) table — must be on the same connection as Source.' },
+							{ Name: 'TargetBeaconName',     DataType: 'String', Required: true },
+							{ Name: 'TargetConnectionHash', DataType: 'String', Required: true },
+							{ Name: 'TargetEntity',         DataType: 'String', Required: true },
+							{ Name: 'GUIDName',             DataType: 'String', Required: true, Description: 'Destination GUID column. Set per-row from OperationConfiguration.GUIDTemplate before upsert.' },
+							{ Name: 'OperationConfiguration', DataType: 'Object', Required: true, Description: '{ JoinOn:{SourceField,RelatedField}, Projection (Record.X / Related.X only), GUIDTemplate, OrderBy (must be UNIQUE source column), BatchSize? }. Bundled to dodge UV settings-resolver template stripping.' },
+							{ Name: 'BatchSize',            DataType: 'Number', Required: false, Description: 'Rows per page on both the source-side keyset LIMIT and the target-side Upserts chunk. Default 500.' }
+						],
+						Handler: function (pWorkItem, pContext, fHandlerCallback, fReportProgress)
+						{
+							let tmpStartMs = Date.now();
+							let tmpSettings = pWorkItem.Settings || {};
+							let tmpSourceBeacon = tmpSettings.SourceBeaconName;
+							let tmpSourceConn   = tmpSettings.SourceConnection;
+							let tmpSourceTable  = tmpSettings.SourceTable;
+							let tmpRelatedTable = tmpSettings.RelatedTable;
+							let tmpTargetBeacon = tmpSettings.TargetBeaconName;
+							let tmpTargetConn   = tmpSettings.TargetConnectionHash;
+							let tmpTargetEntity = tmpSettings.TargetEntity;
+							let tmpGUIDName     = tmpSettings.GUIDName;
+							let tmpBatchSize    = tmpSettings.BatchSize || 500;
+
+							let tmpOpCfg = tmpSettings.OperationConfiguration || {};
+							if (typeof tmpOpCfg === 'string')
+							{
+								try { tmpOpCfg = JSON.parse(tmpOpCfg); } catch (e) { tmpOpCfg = {}; }
+							}
+							let tmpJoinOn      = tmpOpCfg.JoinOn || {};
+							let tmpProjection  = tmpOpCfg.Projection || {};
+							let tmpOrderBy     = tmpOpCfg.OrderBy || '';
+							let tmpGUIDTemplate = tmpOpCfg.GUIDTemplate || '';
+
+							if (!tmpSelf._Client || !tmpSourceBeacon || !tmpSourceConn || !tmpSourceTable || !tmpRelatedTable
+								|| !tmpTargetBeacon || !tmpTargetConn || !tmpTargetEntity || !tmpGUIDName
+								|| !tmpJoinOn.SourceField || !tmpJoinOn.RelatedField
+								|| !tmpOrderBy)
+							{
+								return fHandlerCallback(null, {
+									Outputs: { Pulled: 0, Written: 0, Errors: 0, ElapsedMs: 0, ErrorLog: [] },
+									Log: ['JoinStream: missing required settings (SourceBeaconName, SourceConnection, SourceTable, RelatedTable, Target*, GUIDName, JoinOn.SourceField, JoinOn.RelatedField, OrderBy).']
+								});
+							}
+
+							let tmpWritePath = `/1.0/${tmpTargetConn}/${tmpTargetEntity}/Upserts`;
+							let tmpTotalPulled  = 0;
+							let tmpTotalWritten = 0;
+							let tmpTotalErrors  = 0;
+							let tmpErrorLog     = [];
+							// Keyset cursor: null on the first page (emitter omits WHERE),
+							// then the OrderBy column value of the last row of the previous page.
+							let tmpAfterValue   = null;
+							let tmpAggSourceMs  = 0;
+							let tmpConnID       = null;
+
+							// ── Resolve source IDBeaconConnection once ───────
+							tmpSelf._dispatch(
+								{
+									Capability:  'DataBeaconAccess',
+									Action:      'ListConnections',
+									Settings:    {},
+									AffinityKey: tmpSourceBeacon,
+									TimeoutMs:   30000
+								},
+								(pListErr, pListResult) =>
+								{
+									if (pListErr)
+									{
+										return fHandlerCallback(null, {
+											Outputs: { Pulled: 0, Written: 0, Errors: 0, ElapsedMs: Date.now() - tmpStartMs, ErrorLog: [{ Phase: 'ListConnections', Error: pListErr.message }] },
+											Log: [`JoinStream: ListConnections on [${tmpSourceBeacon}] failed — ${pListErr.message}`]
+										});
+									}
+									let tmpListOut = (pListResult && pListResult.Outputs) || pListResult || {};
+									let tmpConnections = Array.isArray(tmpListOut.Connections) ? tmpListOut.Connections : [];
+									let tmpMatch = null;
+									for (let i = 0; i < tmpConnections.length; i++)
+									{
+										let tmpC = tmpConnections[i];
+										let tmpName = tmpC && tmpC.Name;
+										if (tmpName === tmpSourceConn) { tmpMatch = tmpC; break; }
+										let tmpSanitized = (typeof tmpName === 'string') ? tmpName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') : '';
+										if (tmpSanitized === tmpSourceConn) { tmpMatch = tmpC; break; }
+									}
+									if (!tmpMatch || !tmpMatch.IDBeaconConnection)
+									{
+										return fHandlerCallback(null, {
+											Outputs: { Pulled: 0, Written: 0, Errors: 0, ElapsedMs: Date.now() - tmpStartMs, ErrorLog: [{ Phase: 'ListConnections', Error: 'no match' }] },
+											Log: [`JoinStream: source connection [${tmpSourceConn}] not found on beacon [${tmpSourceBeacon}].`]
+										});
+									}
+									tmpConnID = tmpMatch.IDBeaconConnection;
+
+									// ── Page loop (keyset pagination) ────────
+									// Pass AfterValue=null on the first page (emitter omits
+									// WHERE) and AfterValue=<last cursor> on subsequent pages.
+									// CursorField is the row-key the emitter chose for the
+									// cursor column; we read it from the last row of each
+									// page and (when it's the synthetic sentinel) strip it
+									// before writing.
+									let fNextPage = () =>
+									{
+										let tmpJoinSpec =
+											{
+												Table:        tmpSourceTable,
+												RelatedTable: tmpRelatedTable,
+												JoinOn:       tmpJoinOn,
+												Projection:   tmpProjection,
+												OrderBy:      tmpOrderBy,
+												Limit:        tmpBatchSize,
+												AfterValue:   tmpAfterValue
+											};
+
+										tmpSelf._dispatch(
+											{
+												Capability:  'DataBeaconAccess',
+												Action:      'Join',
+												Settings:    { IDBeaconConnection: tmpConnID, JoinSpec: tmpJoinSpec },
+												AffinityKey: tmpSourceBeacon,
+												TimeoutMs:   600000
+											},
+											(pJoinErr, pJoinResult) =>
+											{
+												if (pJoinErr)
+												{
+													tmpErrorLog.push({ Phase: 'Join', AfterValue: tmpAfterValue, Error: pJoinErr.message });
+													return fHandlerCallback(null, {
+														Outputs: { Pulled: tmpTotalPulled, Written: tmpTotalWritten, Errors: tmpTotalErrors + 1, ElapsedMs: Date.now() - tmpStartMs, AggregateMs: tmpAggSourceMs, ErrorLog: tmpErrorLog.slice(0, 50) },
+														Log: [`JoinStream: source join failed at after=${JSON.stringify(tmpAfterValue)} — ${pJoinErr.message}`]
+													});
+												}
+												let tmpJoinOut = (pJoinResult && pJoinResult.Outputs) || pJoinResult || {};
+												let tmpRows = Array.isArray(tmpJoinOut.Rows) ? tmpJoinOut.Rows : [];
+												let tmpCursorField = tmpJoinOut.CursorField || null;
+												tmpAggSourceMs += (tmpJoinOut.ElapsedMs || 0);
+												let tmpRowCount = tmpRows.length;
+
+												if (tmpRowCount === 0)
+												{
+													return fHandlerCallback(null, {
+														Outputs: { Pulled: tmpTotalPulled, Written: tmpTotalWritten, Errors: tmpTotalErrors, ElapsedMs: Date.now() - tmpStartMs, AggregateMs: tmpAggSourceMs, ErrorLog: tmpErrorLog.slice(0, 50) },
+														Log: [`JoinStream: ${tmpSourceTable} ⨝ ${tmpRelatedTable} → ${tmpTargetEntity} on [${tmpTargetBeacon}] — pulled ${tmpTotalPulled}, wrote ${tmpTotalWritten}, ${tmpTotalErrors} errors in ${Date.now() - tmpStartMs}ms (source SQL ${tmpAggSourceMs}ms total).`]
+													});
+												}
+
+												// Capture the cursor for the next page BEFORE
+												// any row mutation. CursorField is the column
+												// name the emitter chose for src.<OrderBy>.
+												let tmpNextAfterValue = tmpAfterValue;
+												if (tmpCursorField)
+												{
+													let tmpLastRow = tmpRows[tmpRowCount - 1];
+													if (tmpLastRow && tmpLastRow[tmpCursorField] !== undefined)
+													{
+														tmpNextAfterValue = tmpLastRow[tmpCursorField];
+													}
+												}
+
+												// If the emitter added a synthetic sentinel
+												// cursor column (CursorField === '_dbkj_cursor'),
+												// strip it from each row before write — the
+												// target table doesn't have it.
+												let tmpStripCursor = (tmpCursorField === '_dbkj_cursor');
+												if (tmpStripCursor)
+												{
+													for (let i = 0; i < tmpRowCount; i++)
+													{
+														delete tmpRows[i][tmpCursorField];
+													}
+												}
+
+												// Apply GUIDTemplate per row (substitute from
+												// the row itself — the source-side projection
+												// already named columns to match the target).
+												if (tmpGUIDTemplate)
+												{
+													for (let i = 0; i < tmpRowCount; i++)
+													{
+														let tmpRow = tmpRows[i];
+														tmpRow[tmpGUIDName] = tmpGUIDTemplate.replace(
+															/\{~D:Record\.(\w+)~\}/g,
+															(_m, pField) => (tmpRow[pField] === undefined || tmpRow[pField] === null) ? '' : String(tmpRow[pField]));
+													}
+												}
+
+												// Chunked write of this page
+												tmpSelf._dispatch(
+													{
+														Capability:  'MeadowProxy',
+														Action:      'Request',
+														Settings:    { Method: 'PUT', Path: tmpWritePath, Body: JSON.stringify(tmpRows), RemoteUser: '' },
+														AffinityKey: tmpTargetBeacon,
+														TimeoutMs:   120000
+													},
+													(pWriteErr, pWriteResult) =>
+													{
+														if (pWriteErr)
+														{
+															tmpTotalErrors += tmpRowCount;
+															tmpErrorLog.push({ AfterValue: tmpAfterValue, Error: pWriteErr.message || String(pWriteErr) });
+														}
+														else
+														{
+															let tmpWriteOut = (pWriteResult && pWriteResult.Outputs) || {};
+															let tmpHeaders = tmpWriteOut.Headers || {};
+															let tmpHdrSucceeded = parseInt(tmpHeaders['x-meadow-upsert-succeeded'] || tmpHeaders['X-Meadow-Upsert-Succeeded'] || '-1', 10);
+															let tmpHdrErrored   = parseInt(tmpHeaders['x-meadow-upsert-errored']   || tmpHeaders['X-Meadow-Upsert-Errored']   || '-1', 10);
+															if (tmpHdrSucceeded >= 0 && tmpHdrErrored >= 0)
+															{
+																tmpTotalWritten += tmpHdrSucceeded;
+																tmpTotalErrors  += tmpHdrErrored;
+																if (tmpHdrErrored > 0)
+																{
+																	let tmpRespBody = tmpWriteOut.Body;
+																	if (typeof tmpRespBody === 'string')
+																	{
+																		try { tmpRespBody = JSON.parse(tmpRespBody); } catch (e) { /* ignore */ }
+																	}
+																	let tmpFirstErrors = (tmpRespBody && Array.isArray(tmpRespBody.Errors))
+																		? tmpRespBody.Errors.slice(0, 3).map((pE) => (pE && (pE.Error || pE.Message || JSON.stringify(pE).slice(0, 200))))
+																		: [];
+																	tmpErrorLog.push({ AfterValue: tmpAfterValue, Errored: tmpHdrErrored, Of: tmpRowCount, Details: tmpFirstErrors });
+																}
+															}
+															else
+															{
+																let tmpStatus = tmpWriteOut.Status;
+																if (typeof tmpStatus === 'number' && tmpStatus >= 400)
+																{
+																	tmpTotalErrors += tmpRowCount;
+																	tmpErrorLog.push({ AfterValue: tmpAfterValue, Error: `HTTP ${tmpStatus}` });
+																}
+																else
+																{
+																	tmpTotalWritten += tmpRowCount;
+																}
+															}
+														}
+														tmpTotalPulled += tmpRowCount;
+														tmpRows = null;
+
+														if (typeof fReportProgress === 'function')
+														{
+															try { fReportProgress({ Phase: 'streaming', Pulled: tmpTotalPulled, Written: tmpTotalWritten, Errors: tmpTotalErrors }); }
+															catch (pIgn) { /* best-effort */ }
+														}
+
+														// Last page (short read) → done.
+														if (tmpRowCount < tmpBatchSize)
+														{
+															return fHandlerCallback(null, {
+																Outputs: { Pulled: tmpTotalPulled, Written: tmpTotalWritten, Errors: tmpTotalErrors, ElapsedMs: Date.now() - tmpStartMs, AggregateMs: tmpAggSourceMs, ErrorLog: tmpErrorLog.slice(0, 50) },
+																Log: [`JoinStream: ${tmpSourceTable} ⨝ ${tmpRelatedTable} → ${tmpTargetEntity} on [${tmpTargetBeacon}] — pulled ${tmpTotalPulled}, wrote ${tmpTotalWritten}, ${tmpTotalErrors} errors in ${Date.now() - tmpStartMs}ms (source SQL ${tmpAggSourceMs}ms total).`]
+															});
+														}
+														// Defensive: if the cursor didn't advance
+														// (cursor field missing from the last row,
+														// or non-unique OrderBy violation), abort
+														// rather than spin forever.
+														if (tmpNextAfterValue === tmpAfterValue && tmpAfterValue !== null)
+														{
+															tmpErrorLog.push({ AfterValue: tmpAfterValue, Error: 'keyset cursor did not advance — OrderBy column may not be unique or CursorField missing from row' });
+															return fHandlerCallback(null, {
+																Outputs: { Pulled: tmpTotalPulled, Written: tmpTotalWritten, Errors: tmpTotalErrors + 1, ElapsedMs: Date.now() - tmpStartMs, AggregateMs: tmpAggSourceMs, ErrorLog: tmpErrorLog.slice(0, 50) },
+																Log: [`JoinStream: keyset cursor stalled at after=${JSON.stringify(tmpAfterValue)} — aborting to avoid infinite loop.`]
+															});
+														}
+														tmpAfterValue = tmpNextAfterValue;
+														return fNextPage();
+													});
+											});
+									};
+									fNextPage();
+								});
+						}
+					},
+
+					'AggregateStream':
+					{
+						Description: 'Streaming-layout Aggregation: pushes the GROUP BY into the source DB (DataBeaconAccess.Aggregate), receives the small result set (cardinality of group keys), then chunked-writes the rows to the target table. Memory ceiling = the result set, never the source. Pair with OperationType=SQLAggregate.',
+						SettingsSchema:
+						[
+							{ Name: 'SourceBeaconName',     DataType: 'String', Required: true, Description: 'Beacon name of the source (UV mesh AffinityKey for the aggregate dispatch).' },
+							{ Name: 'SourceConnection',     DataType: 'String', Required: true, Description: 'Source connection name as registered on the source beacon (matches BeaconConnection.Name OR its URL-sanitized form). Resolved to IDBeaconConnection at run time via DataBeaconAccess.ListConnections.' },
+							{ Name: 'SourceTable',          DataType: 'String', Required: true, Description: 'Source table to aggregate over.' },
+							{ Name: 'TargetBeaconName',     DataType: 'String', Required: true, Description: 'Beacon name of the write target.' },
+							{ Name: 'TargetConnectionHash', DataType: 'String', Required: true, Description: 'URL slug of the target connection (used in the /1.0/<hash>/<Table>/Upserts URL).' },
+							{ Name: 'TargetEntity',         DataType: 'String', Required: true, Description: 'Target table for the aggregated rows.' },
+							{ Name: 'GUIDName',             DataType: 'String', Required: true, Description: 'Destination GUID column. Each result row\'s value for this column is set from OperationConfiguration.GUIDTemplate before upsert; meadow uses it as the upsert key (so re-runs replace, not duplicate).' },
+							{ Name: 'OperationConfiguration', DataType: 'Object', Required: true, Description: '{ GroupBy: [field], Aggregates: [{Source, Function, As}], GUIDTemplate, OrderBy? }. Bundled here so UV\'s settings resolver does not template-strip the {~D:Record.X~} placeholders before the handler runs.' },
+							{ Name: 'BatchSize',            DataType: 'Number', Required: false, Description: 'Records per chunked-write Upserts call (default 500). The result set is sliced into chunks of this size and PUT one at a time through MeadowProxy.' }
+						],
+						Handler: function (pWorkItem, pContext, fHandlerCallback, fReportProgress)
+						{
+							let tmpStartMs = Date.now();
+							let tmpSettings = pWorkItem.Settings || {};
+							let tmpSourceBeacon = tmpSettings.SourceBeaconName;
+							let tmpSourceConn   = tmpSettings.SourceConnection;
+							let tmpSourceTable  = tmpSettings.SourceTable;
+							let tmpTargetBeacon = tmpSettings.TargetBeaconName;
+							let tmpTargetConn   = tmpSettings.TargetConnectionHash;
+							let tmpTargetEntity = tmpSettings.TargetEntity;
+							let tmpGUIDName     = tmpSettings.GUIDName;
+							let tmpBatchSize    = tmpSettings.BatchSize || 500;
+
+							let tmpOpCfg = tmpSettings.OperationConfiguration || {};
+							if (typeof tmpOpCfg === 'string')
+							{
+								try { tmpOpCfg = JSON.parse(tmpOpCfg); } catch (e) { tmpOpCfg = {}; }
+							}
+							let tmpGroupBy    = Array.isArray(tmpOpCfg.GroupBy) ? tmpOpCfg.GroupBy : [];
+							let tmpAggregates = Array.isArray(tmpOpCfg.Aggregates) ? tmpOpCfg.Aggregates : [];
+							let tmpOrderBy    = Array.isArray(tmpOpCfg.OrderBy) ? tmpOpCfg.OrderBy : [];
+							let tmpGUIDTemplate = tmpOpCfg.GUIDTemplate || '';
+
+							if (!tmpSelf._Client || !tmpSourceBeacon || !tmpSourceConn || !tmpSourceTable
+								|| !tmpTargetBeacon || !tmpTargetConn || !tmpTargetEntity || !tmpGUIDName
+								|| tmpAggregates.length === 0)
+							{
+								return fHandlerCallback(null, {
+									Outputs: { Pulled: 0, Written: 0, Errors: 0, ElapsedMs: 0, ErrorLog: [] },
+									Log: ['AggregateStream: missing required settings.']
+								});
+							}
+
+							// ── Resolve source IDBeaconConnection ────────────
+							// The aggregate action is keyed by numeric IDBeaconConnection,
+							// but operation configs carry the human-readable Name. One
+							// extra dispatch up front; the rest of the work is the
+							// streaming chunked write.
+							tmpSelf._dispatch(
+								{
+									Capability:  'DataBeaconAccess',
+									Action:      'ListConnections',
+									Settings:    {},
+									AffinityKey: tmpSourceBeacon,
+									TimeoutMs:   30000
+								},
+								(pListErr, pListResult) =>
+								{
+									if (pListErr)
+									{
+										return fHandlerCallback(null, {
+											Outputs: { Pulled: 0, Written: 0, Errors: 0, ElapsedMs: Date.now() - tmpStartMs, ErrorLog: [{ Phase: 'ListConnections', Error: pListErr.message }] },
+											Log: [`AggregateStream: ListConnections on [${tmpSourceBeacon}] failed — ${pListErr.message}`]
+										});
+									}
+									let tmpListOut = (pListResult && pListResult.Outputs) || pListResult || {};
+									let tmpConnections = Array.isArray(tmpListOut.Connections) ? tmpListOut.Connections : [];
+									let tmpMatch = null;
+									for (let i = 0; i < tmpConnections.length; i++)
+									{
+										let tmpC = tmpConnections[i];
+										let tmpName = tmpC && tmpC.Name;
+										if (tmpName === tmpSourceConn)
+										{
+											tmpMatch = tmpC;
+											break;
+										}
+										// Also accept the URL-sanitized form. Configs in
+										// the demo are already sanitized but operators may
+										// store either form.
+										let tmpSanitized = (typeof tmpName === 'string') ? tmpName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') : '';
+										if (tmpSanitized === tmpSourceConn)
+										{
+											tmpMatch = tmpC;
+											break;
+										}
+									}
+									if (!tmpMatch || !tmpMatch.IDBeaconConnection)
+									{
+										return fHandlerCallback(null, {
+											Outputs: { Pulled: 0, Written: 0, Errors: 0, ElapsedMs: Date.now() - tmpStartMs, ErrorLog: [{ Phase: 'ListConnections', Error: 'no match' }] },
+											Log: [`AggregateStream: source connection [${tmpSourceConn}] not found on beacon [${tmpSourceBeacon}].`]
+										});
+									}
+									let tmpConnID = tmpMatch.IDBeaconConnection;
+
+									// ── Dispatch source-side aggregate ───────
+									let tmpAggSpec =
+										{
+											Table: tmpSourceTable,
+											GroupBy: tmpGroupBy,
+											Aggregates: tmpAggregates
+										};
+									if (tmpOrderBy.length > 0) { tmpAggSpec.OrderBy = tmpOrderBy; }
+
+									if (typeof fReportProgress === 'function')
+									{
+										try { fReportProgress({ Phase: 'aggregating' }); } catch (pIgn) { /* best-effort */ }
+									}
+
+									tmpSelf._dispatch(
+										{
+											Capability:  'DataBeaconAccess',
+											Action:      'Aggregate',
+											Settings:    { IDBeaconConnection: tmpConnID, AggregateSpec: tmpAggSpec },
+											AffinityKey: tmpSourceBeacon,
+											TimeoutMs:   1800000
+										},
+										(pAggErr, pAggResult) =>
+										{
+											if (pAggErr)
+											{
+												return fHandlerCallback(null, {
+													Outputs: { Pulled: 0, Written: 0, Errors: 1, ElapsedMs: Date.now() - tmpStartMs, ErrorLog: [{ Phase: 'Aggregate', Error: pAggErr.message }] },
+													Log: [`AggregateStream: source aggregate failed — ${pAggErr.message}`]
+												});
+											}
+											let tmpAggOut = (pAggResult && pAggResult.Outputs) || pAggResult || {};
+											let tmpRows = Array.isArray(tmpAggOut.Rows) ? tmpAggOut.Rows : [];
+											let tmpAggElapsed = tmpAggOut.ElapsedMs || 0;
+											let tmpRowCount = tmpRows.length;
+
+											if (tmpRowCount === 0)
+											{
+												return fHandlerCallback(null, {
+													Outputs: { Pulled: 0, Written: 0, Errors: 0, ElapsedMs: Date.now() - tmpStartMs, AggregateMs: tmpAggElapsed, ErrorLog: [] },
+													Log: [`AggregateStream: source returned 0 rows; nothing to write.`]
+												});
+											}
+
+											// ── Apply GUIDTemplate per row ───
+											if (tmpGUIDTemplate)
+											{
+												for (let i = 0; i < tmpRowCount; i++)
+												{
+													let tmpRow = tmpRows[i];
+													tmpRow[tmpGUIDName] = tmpGUIDTemplate.replace(
+														/\{~D:Record\.(\w+)~\}/g,
+														(_m, pField) => (tmpRow[pField] === undefined || tmpRow[pField] === null) ? '' : String(tmpRow[pField]));
+												}
+											}
+
+											// ── Chunked write to target ──────
+											let tmpTotalWritten = 0;
+											let tmpTotalErrors  = 0;
+											let tmpErrorLog     = [];
+											let tmpChunkOffset  = 0;
+											let tmpWritePath    = `/1.0/${tmpTargetConn}/${tmpTargetEntity}/Upserts`;
+
+											let fNextChunk = () =>
+											{
+												if (tmpChunkOffset >= tmpRowCount)
+												{
+													return fHandlerCallback(null, {
+														Outputs:
+														{
+															Pulled: tmpRowCount,
+															Written: tmpTotalWritten,
+															Errors: tmpTotalErrors,
+															ElapsedMs: Date.now() - tmpStartMs,
+															AggregateMs: tmpAggElapsed,
+															ErrorLog: tmpErrorLog.slice(0, 50)
+														},
+														Log: [`AggregateStream: ${tmpSourceTable} → ${tmpTargetEntity} on [${tmpTargetBeacon}] — ${tmpRowCount} groups (aggregate ${tmpAggElapsed}ms), wrote ${tmpTotalWritten}, ${tmpTotalErrors} errors in ${Date.now() - tmpStartMs}ms.`]
+													});
+												}
+												let tmpChunk = tmpRows.slice(tmpChunkOffset, tmpChunkOffset + tmpBatchSize);
+												tmpSelf._dispatch(
+													{
+														Capability:  'MeadowProxy',
+														Action:      'Request',
+														Settings:    { Method: 'PUT', Path: tmpWritePath, Body: JSON.stringify(tmpChunk), RemoteUser: '' },
+														AffinityKey: tmpTargetBeacon,
+														TimeoutMs:   120000
+													},
+													(pWriteErr, pWriteResult) =>
+													{
+														let tmpChunkLen = tmpChunk.length;
+														if (pWriteErr)
+														{
+															tmpTotalErrors += tmpChunkLen;
+															tmpErrorLog.push({ Offset: tmpChunkOffset, Error: pWriteErr.message || String(pWriteErr) });
+														}
+														else
+														{
+															let tmpWriteOut = (pWriteResult && pWriteResult.Outputs) || {};
+															let tmpHeaders = tmpWriteOut.Headers || {};
+															let tmpHdrSucceeded = parseInt(tmpHeaders['x-meadow-upsert-succeeded'] || tmpHeaders['X-Meadow-Upsert-Succeeded'] || '-1', 10);
+															let tmpHdrErrored   = parseInt(tmpHeaders['x-meadow-upsert-errored']   || tmpHeaders['X-Meadow-Upsert-Errored']   || '-1', 10);
+															if (tmpHdrSucceeded >= 0 && tmpHdrErrored >= 0)
+															{
+																tmpTotalWritten += tmpHdrSucceeded;
+																tmpTotalErrors  += tmpHdrErrored;
+																if (tmpHdrErrored > 0)
+																{
+																	let tmpRespBody = tmpWriteOut.Body;
+																	if (typeof tmpRespBody === 'string')
+																	{
+																		try { tmpRespBody = JSON.parse(tmpRespBody); } catch (e) { /* ignore */ }
+																	}
+																	let tmpFirstErrors = (tmpRespBody && Array.isArray(tmpRespBody.Errors))
+																		? tmpRespBody.Errors.slice(0, 3).map((pE) => (pE && (pE.Error || pE.Message || JSON.stringify(pE).slice(0, 200))))
+																		: [];
+																	tmpErrorLog.push({ Offset: tmpChunkOffset, Errored: tmpHdrErrored, Of: tmpChunkLen, Details: tmpFirstErrors });
+																}
+															}
+															else
+															{
+																let tmpStatus = tmpWriteOut.Status;
+																if (typeof tmpStatus === 'number' && tmpStatus >= 400)
+																{
+																	tmpTotalErrors += tmpChunkLen;
+																	tmpErrorLog.push({ Offset: tmpChunkOffset, Error: `HTTP ${tmpStatus}` });
+																}
+																else
+																{
+																	tmpTotalWritten += tmpChunkLen;
+																}
+															}
+														}
+														tmpChunkOffset += tmpChunkLen;
+														if (typeof fReportProgress === 'function')
+														{
+															try { fReportProgress({ Phase: 'writing', Written: tmpTotalWritten, Errors: tmpTotalErrors, Of: tmpRowCount }); }
+															catch (pIgn) { /* best-effort */ }
+														}
+														return fNextChunk();
+													});
+											};
+											fNextChunk();
+										});
+								});
+						}
+					},
+
 					'WriteRecords':
 					{
 						Description: 'Push a comprehension to a target beacon entity using meadow-endpoints bulk Upserts (PUT /<Entity>s/Upserts), routed through the UV mesh by AffinityKey=TargetBeaconName.',
@@ -332,7 +1169,7 @@ class DataMapperBeaconProvider extends libFableServiceProviderBase
 							{ Name: 'ResetMode',        DataType: 'String', Required: false, Description: '\'Append\' (default) | \'Replace\'. Replace soft-deletes existing rows whose GUID is NOT in the new comprehension after the upsert succeeds — keeps cached views from accumulating orphans when source data churns. The purge does NOT touch meadow\'s internal Upsert handler (which is intentionally serial); orphans are deleted via meadow\'s standard DELETE-by-id surface, parallelized client-side via Concurrency.' },
 							{ Name: 'GUIDName',         DataType: 'String', Required: false, Description: 'Column name for the GUID/identity used by ResetMode=Replace orphan detection. Defaults to "GUID" + Entity. Ignored when ResetMode=Append.' }
 						],
-						Handler: function (pWorkItem, pContext, fHandlerCallback)
+						Handler: function (pWorkItem, pContext, fHandlerCallback, fReportProgress)
 						{
 							let tmpStartMs = Date.now();
 							let tmpSettings  = pWorkItem.Settings || {};
@@ -655,11 +1492,75 @@ class DataMapperBeaconProvider extends libFableServiceProviderBase
 												}
 												else
 												{
-													// meadow's bulk Upserts returns
-													// an ack array of length =
-													// input length on success.
-													tmpEntityWritten += tmpChunkLen;
+													// meadow's bulk Upserts returns HTTP 200
+													// even when every row in the chunk fails
+													// (postgres type errors, missing table, NOT
+													// NULL violations, etc.). The authoritative
+													// per-row totals are in HTTP HEADERS:
+													//   X-Meadow-Upsert-Total
+													//   X-Meadow-Upsert-Succeeded
+													//   X-Meadow-Upsert-Errored
+													// without these, we'd silently report
+													// "Written: 25000" while the table stays empty.
+													// MeadowProxy forwards response headers into
+													// Outputs.Headers (lowercased keys, per Node http).
+													let tmpHeaders = (tmpOut.Headers) || {};
+													let tmpHdrTotal      = parseInt(tmpHeaders['x-meadow-upsert-total']     || tmpHeaders['X-Meadow-Upsert-Total']     || '-1', 10);
+													let tmpHdrSucceeded  = parseInt(tmpHeaders['x-meadow-upsert-succeeded'] || tmpHeaders['X-Meadow-Upsert-Succeeded'] || '-1', 10);
+													let tmpHdrErrored    = parseInt(tmpHeaders['x-meadow-upsert-errored']   || tmpHeaders['X-Meadow-Upsert-Errored']   || '-1', 10);
+
+													let tmpBody = tmpOut.Body;
+													if (typeof tmpBody === 'string')
+													{
+														try { tmpBody = JSON.parse(tmpBody); }
+														catch (pParseIgn) { /* leave as string for fallback */ }
+													}
+													let tmpFirstErrors = [];
+													if (tmpBody && typeof tmpBody === 'object' && Array.isArray(tmpBody.Errors))
+													{
+														tmpFirstErrors = tmpBody.Errors.slice(0, 3).map((pE) => (pE && (pE.Error || pE.Message || JSON.stringify(pE).slice(0, 200))));
+													}
+
+													let tmpRowSucceeded;
+													let tmpRowErrored;
+													if (tmpHdrSucceeded >= 0 && tmpHdrErrored >= 0)
+													{
+														// Headers tell the truth — use them.
+														tmpRowSucceeded = tmpHdrSucceeded;
+														tmpRowErrored   = tmpHdrErrored;
+													}
+													else if (tmpBody && typeof tmpBody === 'object')
+													{
+														// No headers (older meadow?) — try the body.
+														tmpRowErrored   = Array.isArray(tmpBody.Errors)  ? tmpBody.Errors.length  : 0;
+														tmpRowSucceeded = Array.isArray(tmpBody.Records) ? tmpBody.Records.length
+															: (Array.isArray(tmpBody) ? tmpBody.length : Math.max(0, tmpChunkLen - tmpRowErrored));
+													}
+													else
+													{
+														// Truly opaque — assume the chunk wrote.
+														tmpRowSucceeded = tmpChunkLen;
+														tmpRowErrored   = 0;
+													}
+
+													if (tmpRowErrored > 0)
+													{
+														tmpEntityErrors += tmpRowErrored;
+														tmpErrorLog.push({ Entity: tmpEntity, Chunk: tmpStart, Error: `${tmpRowErrored}/${tmpChunkLen} rows errored`, Details: tmpFirstErrors });
+													}
+													if (tmpRowSucceeded > 0) tmpEntityWritten += tmpRowSucceeded;
 												}
+											}
+											// Heartbeat per-chunk so UV's stall detector
+											// (HeartbeatExpectedMs * 2 = 120s default)
+											// doesn't flip a long bulk-write to Stalled.
+											// At 250K rows / 500 per chunk = 500 chunks;
+											// even at 5-way concurrency the wall-clock
+											// can run several minutes total.
+											if (typeof fReportProgress === 'function')
+											{
+												try { fReportProgress({ Phase: 'writing', Entity: tmpEntity, Written: tmpEntityWritten, Errors: tmpEntityErrors }); }
+												catch (pProgErr) { /* best-effort */ }
 											}
 											tmpInFlight--;
 											// Refill the worker pool: try to start a
@@ -1421,8 +2322,28 @@ class DataMapperBeaconProvider extends libFableServiceProviderBase
 										let tmpExpr = tmpProjection[tmpProjKeys[p]];
 										if (typeof tmpExpr === 'string')
 										{
-											let tmpMatch = tmpExpr.match(/^\{~D:Record\.(\w+)~\}$/);
-											if (tmpMatch) { tmpProjected[tmpProjKeys[p]] = tmpMerged[tmpMatch[1]]; }
+											// Accept three prefixes — Record.X (merged
+											// namespace, Source-wins-on-collision per
+											// §6 Q3), Source.X (force the source side),
+											// and Related.X (force the related side).
+											// Without Related/Source explicit access,
+											// any related field whose name collides
+											// with a source field is unreachable, and a
+											// projection that uses {~D:Related.X~}
+											// would otherwise pass through as a literal
+											// string and crash the upsert (HTTP 200
+											// from the bulk endpoint, but every row
+											// errors with "invalid input syntax").
+											let tmpMatchTpl = tmpExpr.match(/^\{~D:(Record|Source|Related)\.(\w+)~\}$/);
+											if (tmpMatchTpl)
+											{
+												let tmpScope = tmpMatchTpl[1];
+												let tmpField = tmpMatchTpl[2];
+												let tmpLookup = (tmpScope === 'Source') ? tmpSrc
+													: (tmpScope === 'Related') ? tmpRel
+													: tmpMerged;
+												tmpProjected[tmpProjKeys[p]] = tmpLookup[tmpField];
+											}
 											else if (tmpMerged.hasOwnProperty(tmpExpr)) { tmpProjected[tmpProjKeys[p]] = tmpMerged[tmpExpr]; }
 											else { tmpProjected[tmpProjKeys[p]] = tmpExpr; }
 										}
@@ -1431,8 +2352,15 @@ class DataMapperBeaconProvider extends libFableServiceProviderBase
 									if (tmpGUIDTemplate)
 									{
 										tmpProjected[tmpGUIDName] = tmpGUIDTemplate.replace(
-											/\{~D:Record\.(\w+)~\}/g,
-											(_m, pField) => (tmpMerged[pField] === undefined || tmpMerged[pField] === null) ? '' : String(tmpMerged[pField]).replace(/[^A-Za-z0-9_]/g, '_'));
+											/\{~D:(Record|Source|Related)\.(\w+)~\}/g,
+											(_m, pScope, pField) =>
+											{
+												let tmpLookup = (pScope === 'Source') ? tmpSrc
+													: (pScope === 'Related') ? tmpRel
+													: tmpMerged;
+												let tmpVal = tmpLookup[pField];
+												return (tmpVal === undefined || tmpVal === null) ? '' : String(tmpVal).replace(/[^A-Za-z0-9_]/g, '_');
+											});
 									}
 									tmpOut.push(tmpProjected);
 								}

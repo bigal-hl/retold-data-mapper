@@ -28,6 +28,15 @@ class DashboardShellApplication extends libPictApplication
 			'Dashboards',
 			Object.assign({}, libSectionDashboard.default_configuration,
 				{
+					// pict-section-dashboard reads `ContentDestinationAddress`
+					// at render time (Pict-Section-Dashboard.js:155). Setting
+					// only DefaultDestinationAddress here was a no-op — the
+					// section fell back to '#Pict-Section-Dashboard' (the
+					// default) which doesn't exist in dashboards.html, so
+					// the page hung at the "Loading dashboards…" placeholder
+					// forever. Set both keys so consumers using either
+					// convention get the correct mount point.
+					ContentDestinationAddress: '#dashboard-section',
 					DefaultDestinationAddress: '#dashboard-section',
 					APIBaseUrl:                '/mapper',
 					Mode:                      'manage',

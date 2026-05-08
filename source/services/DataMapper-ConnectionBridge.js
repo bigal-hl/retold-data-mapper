@@ -29,6 +29,16 @@ const CONFIGS_BEACON_NAME = 'configs-databeacon';
 const CONFIGS_CONNECTION_NAME = 'platform-configs';
 const CONFIGS_SCHEMA_FILES = ['OperationConfigSchema.json', 'DashboardConfigSchema.json'];
 
+// Env var name for declarative additional-beacon connection provisioning.
+// Value is a JSON array of { BeaconName, ConnectionName, Type, Config,
+// AutoConnect, Description } entries. Each entry results in an idempotent
+// DataBeaconManagement.CreateConnection dispatch against BeaconName at
+// data-mapper startup. Used to make the data-platform stack zero-touch:
+// without this, lake-databeacon / opdb-databeacon would have no connection
+// at boot, every Pull→Write would 405, and the operator would have to wire
+// each beacon by hand through its own admin UI.
+const BOOTSTRAP_CONNECTIONS_ENV = 'RETOLD_DATA_MAPPER_BOOTSTRAP_CONNECTIONS';
+
 class DataMapperConnectionBridge extends libFableServiceProviderBase
 {
 	constructor(pFable, pOptions, pServiceHash)
@@ -224,6 +234,165 @@ class DataMapperConnectionBridge extends libFableServiceProviderBase
 						{
 							return tmpSelf._bootstrapEagerRegisterAll(fCallback);
 						});
+					});
+			});
+	}
+
+	/**
+	 * Provision additional databeacon connections declared in the
+	 * RETOLD_DATA_MAPPER_BOOTSTRAP_CONNECTIONS env var. Each entry triggers
+	 * an idempotent DataBeaconManagement.CreateConnection dispatch against
+	 * the named beacon. Skipped silently when the env var is absent or
+	 * empty (e.g. solo data-mapper deployments that don't want lake/opdb
+	 * auto-wired).
+	 *
+	 * Entry shape (JSON array):
+	 *   [{ BeaconName: "lake-databeacon",
+	 *      ConnectionName: "lake-main",
+	 *      Type: "PostgreSQL",
+	 *      Config: { Host, Port, Database, User, Password, ... },
+	 *      AutoConnect: true,
+	 *      Description: "..." },
+	 *    ...]
+	 *
+	 * Each entry is processed serially. Per-entry failures are logged
+	 * warn-only and do not block subsequent entries — a missing or
+	 * unreachable beacon shouldn't sabotage other provisioning.
+	 *
+	 * fCallback fires once when all entries are processed (no error).
+	 */
+	bootstrapAdditionalBeacons(fCallback)
+	{
+		let tmpSelf = this;
+		let tmpRaw = process.env[BOOTSTRAP_CONNECTIONS_ENV];
+		if (!tmpRaw || !tmpRaw.trim())
+		{
+			return fCallback(null, { Skipped: true, Reason: 'env var not set' });
+		}
+
+		let tmpEntries;
+		try { tmpEntries = JSON.parse(tmpRaw); }
+		catch (pParseErr)
+		{
+			tmpSelf.fable.log.warn(
+				`DataMapper bootstrap: ${BOOTSTRAP_CONNECTIONS_ENV} is not valid JSON ` +
+				`(${pParseErr.message}). Skipping additional-beacon provisioning. ` +
+				`Expected a JSON array of {BeaconName, ConnectionName, Type, Config, AutoConnect, Description}.`);
+			return fCallback(null, { Skipped: true, Reason: 'invalid JSON' });
+		}
+		if (!Array.isArray(tmpEntries) || tmpEntries.length === 0)
+		{
+			return fCallback(null, { Skipped: true, Reason: 'empty array' });
+		}
+
+		tmpSelf.fable.log.info(`DataMapper bootstrap: provisioning ${tmpEntries.length} additional-beacon connection(s) from ${BOOTSTRAP_CONNECTIONS_ENV}.`);
+
+		let tmpReport = { Created: [], AlreadyPresent: [], Failed: [] };
+		let tmpIdx = 0;
+		let fNext = () =>
+		{
+			if (tmpIdx >= tmpEntries.length)
+			{
+				tmpSelf.fable.log.info(
+					`DataMapper bootstrap: additional-beacon provisioning done — ` +
+					`${tmpReport.Created.length} created, ${tmpReport.AlreadyPresent.length} already present, ` +
+					`${tmpReport.Failed.length} failed.`);
+				return fCallback(null, tmpReport);
+			}
+			let tmpEntry = tmpEntries[tmpIdx++];
+			tmpSelf._provisionOneBeaconConnection(tmpEntry, (pErr, pOutcome) =>
+			{
+				if (pErr)
+				{
+					tmpReport.Failed.push({ BeaconName: tmpEntry.BeaconName, ConnectionName: tmpEntry.ConnectionName, Error: pErr.message });
+				}
+				else if (pOutcome && pOutcome.AlreadyPresent)
+				{
+					tmpReport.AlreadyPresent.push({ BeaconName: tmpEntry.BeaconName, ConnectionName: tmpEntry.ConnectionName, IDBeaconConnection: pOutcome.IDBeaconConnection });
+				}
+				else
+				{
+					tmpReport.Created.push({ BeaconName: tmpEntry.BeaconName, ConnectionName: tmpEntry.ConnectionName, IDBeaconConnection: pOutcome && pOutcome.IDBeaconConnection });
+				}
+				return fNext();
+			});
+		};
+		fNext();
+	}
+
+	/**
+	 * Idempotent provisioning of a single (beacon, connection) pair.
+	 * Lists connections first; only dispatches CreateConnection when no
+	 * matching name is present. Silent skip when the entry is malformed
+	 * (missing BeaconName / ConnectionName / Type) — log a warn so the
+	 * operator can find it.
+	 */
+	_provisionOneBeaconConnection(pEntry, fCallback)
+	{
+		let tmpSelf = this;
+		if (!pEntry || !pEntry.BeaconName || !pEntry.ConnectionName || !pEntry.Type)
+		{
+			tmpSelf.fable.log.warn(
+				`DataMapper bootstrap: skipping malformed connection entry — ` +
+				`requires BeaconName, ConnectionName, Type. Got: ${JSON.stringify(pEntry)}`);
+			return fCallback(null, { Skipped: true });
+		}
+
+		let tmpBeacon = pEntry.BeaconName;
+		let tmpName   = pEntry.ConnectionName;
+
+		tmpSelf._dispatch(
+			{
+				Capability:  'DataBeaconAccess',
+				Action:      'ListConnections',
+				Settings:    {},
+				AffinityKey: tmpBeacon,
+				TimeoutMs:   15000
+			},
+			(pListErr, pListResult) =>
+			{
+				if (pListErr)
+				{
+					tmpSelf.fable.log.warn(`DataMapper bootstrap: ListConnections on [${tmpBeacon}] failed (${pListErr.message}); attempting CreateConnection anyway (handler is idempotent).`);
+				}
+				let tmpOutputs = (pListResult && pListResult.Outputs) || pListResult || {};
+				let tmpExisting = (tmpOutputs.Connections || []).find((c) => c && c.Name === tmpName);
+				if (tmpExisting && tmpExisting.IDBeaconConnection)
+				{
+					tmpSelf.fable.log.info(`DataMapper bootstrap: connection [${tmpBeacon}/${tmpName}] already present (id=${tmpExisting.IDBeaconConnection}).`);
+					return fCallback(null, { AlreadyPresent: true, IDBeaconConnection: tmpExisting.IDBeaconConnection });
+				}
+
+				tmpSelf.fable.log.info(`DataMapper bootstrap: creating connection [${tmpBeacon}/${tmpName}] (Type=${pEntry.Type}).`);
+				tmpSelf._dispatch(
+					{
+						Capability:  'DataBeaconManagement',
+						Action:      'CreateConnection',
+						Settings:
+						{
+							Name:        tmpName,
+							Type:        pEntry.Type,
+							Config:      pEntry.Config || {},
+							AutoConnect: pEntry.AutoConnect !== false,
+							Description: pEntry.Description || `Auto-provisioned by retold-data-mapper bootstrap.`
+						},
+						AffinityKey: tmpBeacon,
+						TimeoutMs:   30000
+					},
+					(pCreateErr, pCreateRes) =>
+					{
+						if (pCreateErr)
+						{
+							tmpSelf.fable.log.warn(
+								`DataMapper bootstrap: CreateConnection [${tmpBeacon}/${tmpName}] failed (${pCreateErr.message}). ` +
+								`The data-mapper will continue, but operations targeting this connection will return HTTP 405 ` +
+								`until the connection is created (e.g. via the beacon's web UI).`);
+							return fCallback(pCreateErr);
+						}
+						let tmpCreateOut = (pCreateRes && pCreateRes.Outputs) || pCreateRes || {};
+						let tmpNewID = tmpCreateOut.IDBeaconConnection;
+						tmpSelf.fable.log.info(`DataMapper bootstrap: created connection [${tmpBeacon}/${tmpName}] (id=${tmpNewID}, created=${tmpCreateOut.Created}, connected=${tmpCreateOut.Connected}).`);
+						return fCallback(null, { IDBeaconConnection: tmpNewID });
 					});
 			});
 	}
@@ -1627,15 +1796,17 @@ class DataMapperConnectionBridge extends libFableServiceProviderBase
 									(pTrigErr, pManifest) =>
 									{
 										if (pTrigErr) return _self._sendError(pResponse, 502, 'UV /Trigger failed: ' + pTrigErr.message, fNext);
+										let tmpHasTaskErrors = _self._taskOutputsHaveErrors(pManifest && pManifest.TaskOutputs);
 										pResponse.send({
-											Success:        pManifest && (pManifest.Status === 'Complete'),
+											Success:        pManifest && (pManifest.Status === 'Complete') && !tmpHasTaskErrors,
 											OperationHash:  tmpHash,
 											OperationName:  tmpGraph.Name,
 											RunHash:        pManifest && pManifest.RunHash,
 											Status:         pManifest && pManifest.Status,
 											ElapsedMs:      pManifest && pManifest.ElapsedMs,
 											TaskOutputs:    _self._summarizeTaskOutputs(pManifest && pManifest.TaskOutputs),
-											Errors:         pManifest && pManifest.Errors
+											Errors:         pManifest && pManifest.Errors,
+											HasTaskErrors:  tmpHasTaskErrors
 										});
 										return fNext();
 									});
@@ -1676,8 +1847,14 @@ class DataMapperConnectionBridge extends libFableServiceProviderBase
 							case 'extraction':
 								tmpGraph = _self._compileExtractionToOperation(pOperation);
 								break;
+							case 'passthroughclone':
+								tmpGraph = _self._compileCloneToOperation(pOperation);
+								break;
 							case 'aggregation':
 								tmpGraph = _self._compileAggregationToOperation(pOperation);
+								break;
+							case 'sqlaggregate':
+								tmpGraph = _self._compileSQLAggregateToOperation(pOperation);
 								break;
 							case 'histogram':
 								tmpGraph = _self._compileHistogramToOperation(pOperation);
@@ -1685,8 +1862,11 @@ class DataMapperConnectionBridge extends libFableServiceProviderBase
 							case 'intersection':
 								tmpGraph = _self._compileIntersectionToOperation(pOperation);
 								break;
+							case 'sqljoin':
+								tmpGraph = _self._compileSQLJoinToOperation(pOperation);
+								break;
 							default:
-								tmpDispatchErr = 'OperationType "' + pOperation.OperationType + '" not supported. Expected one of: Extraction, Aggregation, Histogram, Intersection.';
+								tmpDispatchErr = 'OperationType "' + pOperation.OperationType + '" not supported. Expected one of: Extraction, PassthroughClone, Aggregation, SQLAggregate, Histogram, Intersection, SQLJoin.';
 						}
 						if (tmpDispatchErr)
 						{
@@ -1708,7 +1888,13 @@ class DataMapperConnectionBridge extends libFableServiceProviderBase
 
 						let fTrigger = (pUVHash, pCacheHit) =>
 						{
-							_self._request('POST', '/Operation/' + pUVHash + '/Trigger', {},
+							_self._request('POST', '/Operation/' + pUVHash + '/Trigger',
+								// TimeoutMs raised from UV's 10-min default to 1 hour
+								// for high-volume runs (e.g. 250K-row clones write
+								// ~12 min with 5-way concurrency). UV's OutputStore
+								// keeps the manifest small via disk-spillover, so the
+								// trigger only needs to outlast the write loop.
+								{ TimeoutMs: 3600000 },
 								(pTrigErr, pManifest) =>
 								{
 									if (pTrigErr)
@@ -1727,8 +1913,9 @@ class DataMapperConnectionBridge extends libFableServiceProviderBase
 										}
 										return _self._sendError(pResponse, 502, 'UV /Trigger failed: ' + pTrigErr.message, fNext);
 									}
+									let tmpHasTaskErrors = _self._taskOutputsHaveErrors(pManifest && pManifest.TaskOutputs);
 									pResponse.send({
-										Success:        pManifest && (pManifest.Status === 'Complete'),
+										Success:        pManifest && (pManifest.Status === 'Complete') && !tmpHasTaskErrors,
 										OperationHash:  pUVHash,
 										OperationName:  tmpGraph.Name,
 										OperationType:  pOperation.OperationType,
@@ -1737,7 +1924,8 @@ class DataMapperConnectionBridge extends libFableServiceProviderBase
 										Status:         pManifest && pManifest.Status,
 										ElapsedMs:      pManifest && pManifest.ElapsedMs,
 										TaskOutputs:    _self._summarizeTaskOutputs(pManifest && pManifest.TaskOutputs),
-										Errors:         pManifest && pManifest.Errors
+										Errors:         pManifest && pManifest.Errors,
+										HasTaskErrors:  tmpHasTaskErrors
 									});
 									return fNext();
 								});
@@ -2279,6 +2467,262 @@ class DataMapperConnectionBridge extends libFableServiceProviderBase
 	}
 
 	/**
+	 * Compile an OperationConfig (OperationType=PassthroughClone) into a
+	 * single-node streaming graph: one CloneStream work item that loops
+	 * pull-batch + write-batch internally until the source is exhausted.
+	 *
+	 * Different layout from Extraction (Pull → Extract → Comprehend → Write):
+	 * the Comprehension stage is gone because the destination's GUIDxxxMirror
+	 * upsert key already dedups on the write side. State edges never carry
+	 * a giant array — at 100x scale (2.5M rows) memory ceiling is one batch.
+	 *
+	 * Use for 1:1 clones where there's no cross-record JS logic. For
+	 * computed columns / synthetic GUIDs / row-pair operations, the
+	 * Extraction layout still applies.
+	 */
+	_compileCloneToOperation(pOperation)
+	{
+		let tmpCfg = pOperation.OperationConfiguration || {};
+		if (typeof tmpCfg === 'string')
+		{
+			try { tmpCfg = JSON.parse(tmpCfg); } catch (e) { tmpCfg = {}; }
+		}
+
+		let tmpEntity        = tmpCfg.Entity || pOperation.TargetTable || 'Record';
+		let tmpGUIDName      = tmpCfg.GUIDName || ('GUID' + tmpEntity);
+		let tmpGUIDTemplate  = tmpCfg.GUIDTemplate || '';
+		let tmpProjection    = tmpCfg.Projection || null;
+		let tmpHashSeed      = (pOperation.Hash || ('operation-' + pOperation.IDOperationConfig));
+		let tmpName          = pOperation.Name || ('Clone ' + (pOperation.Hash || pOperation.IDOperationConfig));
+
+		return {
+			Name: tmpName,
+			Description: pOperation.Description || '',
+			Tags: ['data-mapper', 'operation', 'passthrough-clone', tmpHashSeed],
+			Author: 'retold-data-mapper',
+			Version: '1.0.0',
+			Graph: {
+				Nodes: [
+					{ Hash: 'start', Type: 'start', X: 50, Y: 200, Width: 100, Height: 60, Title: 'Start',
+					  Ports: [ { Hash: 'start-eo-out', Direction: 'output', Side: 'right-bottom' } ] },
+
+					{ Hash: 'clone', Type: 'beacon-datamapperrecords-clonestream',
+					  X: 220, Y: 180, Width: 240, Height: 140,
+					  Title: 'Stream ' + (pOperation.SourceEntity || '?') + ' → ' + tmpEntity,
+					  Ports: [
+						{ Hash: 'c-ei-Trigger',  Direction: 'input',  Side: 'left-bottom', Label: 'Trigger' },
+						{ Hash: 'c-eo-Complete', Direction: 'output', Side: 'right-bottom', Label: 'Complete' }
+					  ],
+					  Data: {
+						SourceBeaconName:     pOperation.SourceBeaconName || '',
+						SourceConnectionHash: pOperation.SourceConnectionHash || '',
+						SourceEntity:         pOperation.SourceEntity || '',
+						TargetBeaconName:     pOperation.TargetBeaconName || '',
+						TargetConnectionHash: pOperation.TargetConnectionHash || '',
+						TargetEntity:         tmpEntity,
+						GUIDName:             tmpGUIDName,
+						BatchSize:            tmpCfg.BatchSize || 500,
+						// SortField/FilterExpression/WriteConcurrency are
+						// optional; the executor defaults SortField to
+						// 'ID<SourceEntity>'. Pass through if the caller set them.
+						SortField:            (tmpCfg.SortField !== undefined) ? tmpCfg.SortField : undefined,
+						FilterExpression:     tmpCfg.FilterExpression || '',
+						WriteConcurrency:     tmpCfg.WriteConcurrency || 1,
+						// GUIDTemplate + Projection live inside an Object-typed
+						// setting so UV's settings resolver doesn't template-strip
+						// the {~D:Record.X~} placeholders before the handler runs.
+						// (The resolver substitutes those tokens against whatever's
+						// in scope at compile time, which collapses every batch
+						// to the same GUID and the upserts overwrite a single
+						// row. Same trick the typed-op compilers use for the
+						// Aggregate/Histogram/Intersect Settings.)
+						OperationConfiguration: JSON.stringify({ Projection: tmpProjection, GUIDTemplate: tmpGUIDTemplate }),
+						AffinityKey:          'data-mapper'
+					  }
+					},
+
+					{ Hash: 'end', Type: 'end', X: 540, Y: 220, Width: 100, Height: 60, Title: 'End',
+					  Ports: [ { Hash: 'end-ei-in', Direction: 'input', Side: 'left-bottom' } ] }
+				],
+				Connections: [
+					{ SourceNodeHash: 'start', SourcePortHash: 'start-eo-out',  TargetNodeHash: 'clone', TargetPortHash: 'c-ei-Trigger' },
+					{ SourceNodeHash: 'clone', SourcePortHash: 'c-eo-Complete', TargetNodeHash: 'end',   TargetPortHash: 'end-ei-in' }
+				],
+				ViewState: { PanX: 0, PanY: 0, Zoom: 1 }
+			}
+		};
+	}
+
+	/**
+	 * Compile an OperationConfig (OperationType=SQLAggregate) into a
+	 * single-node streaming graph: one AggregateStream work item that
+	 * pushes the GROUP BY into the source DB, receives the small result
+	 * set (cardinality of group keys), and chunked-writes the rows.
+	 *
+	 * Different layout from Aggregation (Pull → Aggregate → Comprehend → Write):
+	 * the source frame never enters V8 — only the aggregated result does.
+	 * Memory ceiling = group cardinality, not source row count. Pair with
+	 * source databases that have indexes on the GroupBy columns; otherwise
+	 * the source-side scan dominates.
+	 */
+	_compileSQLAggregateToOperation(pOperation)
+	{
+		let tmpCfg = pOperation.OperationConfiguration || {};
+		if (typeof tmpCfg === 'string')
+		{
+			try { tmpCfg = JSON.parse(tmpCfg); } catch (e) { tmpCfg = {}; }
+		}
+
+		let tmpEntity        = tmpCfg.Entity || pOperation.TargetTable || 'Aggregate';
+		let tmpGUIDName      = tmpCfg.GUIDName || ('GUID' + tmpEntity);
+		let tmpGUIDTemplate  = tmpCfg.GUIDTemplate || '';
+		let tmpGroupBy       = Array.isArray(tmpCfg.GroupBy) ? tmpCfg.GroupBy : [];
+		let tmpAggregates    = Array.isArray(tmpCfg.Aggregates) ? tmpCfg.Aggregates : [];
+		let tmpOrderBy       = Array.isArray(tmpCfg.OrderBy) ? tmpCfg.OrderBy : [];
+		let tmpHashSeed      = (pOperation.Hash || ('operation-' + pOperation.IDOperationConfig));
+		let tmpName          = pOperation.Name || ('SQLAggregate ' + (pOperation.Hash || pOperation.IDOperationConfig));
+
+		// Bundle GroupBy/Aggregates/GUIDTemplate inside an Object-typed
+		// OperationConfiguration setting so UV's settings resolver doesn't
+		// template-strip the {~D:Record.X~} placeholders or chew on the
+		// nested arrays. Same trick CloneStream uses for its GUIDTemplate.
+		let tmpBundledCfg = {
+			GroupBy: tmpGroupBy,
+			Aggregates: tmpAggregates,
+			GUIDTemplate: tmpGUIDTemplate
+		};
+		if (tmpOrderBy.length > 0) { tmpBundledCfg.OrderBy = tmpOrderBy; }
+
+		return {
+			Name: tmpName,
+			Description: pOperation.Description || '',
+			Tags: ['data-mapper', 'operation', 'sql-aggregate', tmpHashSeed],
+			Author: 'retold-data-mapper',
+			Version: '1.0.0',
+			Graph: {
+				Nodes: [
+					{ Hash: 'start', Type: 'start', X: 50, Y: 200, Width: 100, Height: 60, Title: 'Start',
+					  Ports: [ { Hash: 'start-eo-out', Direction: 'output', Side: 'right-bottom' } ] },
+
+					{ Hash: 'agg', Type: 'beacon-datamapperrecords-aggregatestream',
+					  X: 220, Y: 180, Width: 260, Height: 140,
+					  Title: 'SQL Agg ' + (pOperation.SourceEntity || '?') + ' → ' + tmpEntity,
+					  Ports: [
+						{ Hash: 'a-ei-Trigger',  Direction: 'input',  Side: 'left-bottom', Label: 'Trigger' },
+						{ Hash: 'a-eo-Complete', Direction: 'output', Side: 'right-bottom', Label: 'Complete' }
+					  ],
+					  Data: {
+						SourceBeaconName:     pOperation.SourceBeaconName || '',
+						SourceConnection:     pOperation.SourceConnectionHash || '',
+						SourceTable:          pOperation.SourceEntity || '',
+						TargetBeaconName:     pOperation.TargetBeaconName || '',
+						TargetConnectionHash: pOperation.TargetConnectionHash || '',
+						TargetEntity:         tmpEntity,
+						GUIDName:             tmpGUIDName,
+						BatchSize:            tmpCfg.BatchSize || 500,
+						OperationConfiguration: JSON.stringify(tmpBundledCfg),
+						AffinityKey:          'data-mapper'
+					  }
+					},
+
+					{ Hash: 'end', Type: 'end', X: 560, Y: 220, Width: 100, Height: 60, Title: 'End',
+					  Ports: [ { Hash: 'end-ei-in', Direction: 'input', Side: 'left-bottom' } ] }
+				],
+				Connections: [
+					{ SourceNodeHash: 'start', SourcePortHash: 'start-eo-out',  TargetNodeHash: 'agg', TargetPortHash: 'a-ei-Trigger' },
+					{ SourceNodeHash: 'agg',   SourcePortHash: 'a-eo-Complete', TargetNodeHash: 'end', TargetPortHash: 'end-ei-in' }
+				],
+				ViewState: { PanX: 0, PanY: 0, Zoom: 1 }
+			}
+		};
+	}
+
+	/**
+	 * Compile an OperationConfig (OperationType=SQLJoin) into a single-node
+	 * streaming graph: one JoinStream work item that pages an INNER JOIN out
+	 * of the source DB and chunked-writes each page to the target table.
+	 *
+	 * Different layout from Intersection (Pull → Pull-Related → Intersect →
+	 * Comprehend → Write): both source frames never enter V8 — only one
+	 * page-sized batch of the joined result lives in memory at a time. The
+	 * planner-side requirement is that source + related share a connection
+	 * so the JOIN can be done at the DB.
+	 */
+	_compileSQLJoinToOperation(pOperation)
+	{
+		let tmpCfg = pOperation.OperationConfiguration || {};
+		if (typeof tmpCfg === 'string')
+		{
+			try { tmpCfg = JSON.parse(tmpCfg); } catch (e) { tmpCfg = {}; }
+		}
+
+		let tmpEntity        = tmpCfg.Entity || pOperation.TargetTable || 'Joined';
+		let tmpGUIDName      = tmpCfg.GUIDName || ('GUID' + tmpEntity);
+		let tmpGUIDTemplate  = tmpCfg.GUIDTemplate || '';
+		let tmpJoinOn        = tmpCfg.JoinOn || {};
+		let tmpProjection    = tmpCfg.Projection || {};
+		let tmpOrderBy       = tmpCfg.OrderBy || '';
+		let tmpRelatedTable  = tmpCfg.RelatedEntity || '';
+		let tmpHashSeed      = (pOperation.Hash || ('operation-' + pOperation.IDOperationConfig));
+		let tmpName          = pOperation.Name || ('SQLJoin ' + (pOperation.Hash || pOperation.IDOperationConfig));
+
+		// Bundle JoinOn / Projection / OrderBy / GUIDTemplate inside an
+		// Object-typed Setting so UV's resolver leaves the {~D:Record.X~} /
+		// {~D:Related.X~} placeholders in the projection alone (otherwise
+		// the resolver chews them up before the handler sees them).
+		let tmpBundledCfg = {
+			JoinOn:       tmpJoinOn,
+			Projection:   tmpProjection,
+			OrderBy:      tmpOrderBy,
+			GUIDTemplate: tmpGUIDTemplate
+		};
+
+		return {
+			Name: tmpName,
+			Description: pOperation.Description || '',
+			Tags: ['data-mapper', 'operation', 'sql-join', tmpHashSeed],
+			Author: 'retold-data-mapper',
+			Version: '1.0.0',
+			Graph: {
+				Nodes: [
+					{ Hash: 'start', Type: 'start', X: 50, Y: 200, Width: 100, Height: 60, Title: 'Start',
+					  Ports: [ { Hash: 'start-eo-out', Direction: 'output', Side: 'right-bottom' } ] },
+
+					{ Hash: 'join', Type: 'beacon-datamapperrecords-joinstream',
+					  X: 220, Y: 180, Width: 280, Height: 140,
+					  Title: 'SQL Join ' + (pOperation.SourceEntity || '?') + ' ⨝ ' + tmpRelatedTable + ' → ' + tmpEntity,
+					  Ports: [
+						{ Hash: 'j-ei-Trigger',  Direction: 'input',  Side: 'left-bottom', Label: 'Trigger' },
+						{ Hash: 'j-eo-Complete', Direction: 'output', Side: 'right-bottom', Label: 'Complete' }
+					  ],
+					  Data: {
+						SourceBeaconName:     pOperation.SourceBeaconName || '',
+						SourceConnection:     pOperation.SourceConnectionHash || '',
+						SourceTable:          pOperation.SourceEntity || '',
+						RelatedTable:         tmpRelatedTable,
+						TargetBeaconName:     pOperation.TargetBeaconName || '',
+						TargetConnectionHash: pOperation.TargetConnectionHash || '',
+						TargetEntity:         tmpEntity,
+						GUIDName:             tmpGUIDName,
+						BatchSize:            tmpCfg.BatchSize || 500,
+						OperationConfiguration: JSON.stringify(tmpBundledCfg),
+						AffinityKey:          'data-mapper'
+					  }
+					},
+
+					{ Hash: 'end', Type: 'end', X: 580, Y: 220, Width: 100, Height: 60, Title: 'End',
+					  Ports: [ { Hash: 'end-ei-in', Direction: 'input', Side: 'left-bottom' } ] }
+				],
+				Connections: [
+					{ SourceNodeHash: 'start', SourcePortHash: 'start-eo-out',  TargetNodeHash: 'join', TargetPortHash: 'j-ei-Trigger' },
+					{ SourceNodeHash: 'join',  SourcePortHash: 'j-eo-Complete', TargetNodeHash: 'end',  TargetPortHash: 'end-ei-in' }
+				],
+				ViewState: { PanX: 0, PanY: 0, Zoom: 1 }
+			}
+		};
+	}
+
+	/**
 	 * Compile an OperationConfig (OperationType=Aggregation) into the
 	 * canonical Pull → Aggregate → Comprehension → Write graph. The
 	 * Aggregate node groups records by GroupBy keys and computes the
@@ -2690,6 +3134,17 @@ class DataMapperConnectionBridge extends libFableServiceProviderBase
 				}
 				break;
 
+			case 'passthroughclone':
+				// Projection is OPTIONAL on PassthroughClone (a 1:1 mirror
+				// passes the source record through as-is). GUIDTemplate is
+				// required so the destination GUIDxxxMirror upsert key is
+				// deterministic.
+				if (!tmpCfg.GUIDTemplate || typeof tmpCfg.GUIDTemplate !== 'string')
+				{
+					return new Error('PassthroughClone requires OperationConfiguration.GUIDTemplate (e.g. "CUSTOMER_{~D:Record.IDCustomer~}").');
+				}
+				break;
+
 			case 'aggregation':
 				if (!Array.isArray(tmpCfg.GroupBy) || tmpCfg.GroupBy.length === 0)
 				{
@@ -2708,6 +3163,36 @@ class DataMapperConnectionBridge extends libFableServiceProviderBase
 						return new Error('Aggregates[' + i + '].Function must be one of Sum|Count|Mean|Min|Max (got "' + (tmpA.Function || tmpA.Op || '') + '").');
 					}
 					if (!tmpA.As) return new Error('Aggregates[' + i + '].As is required (target column name).');
+				}
+				break;
+
+			case 'sqlaggregate':
+				// SQLAggregate is the streaming-layout counterpart to Aggregation:
+				// same shape requirements, but the GroupBy/Aggregates get pushed
+				// down into the source DB instead of materialised in V8. GUIDTemplate
+				// is required so the destination upsert key is deterministic — group
+				// rows are written under stable GUIDs so re-runs replace, not duplicate.
+				if (!Array.isArray(tmpCfg.GroupBy) || tmpCfg.GroupBy.length === 0)
+				{
+					return new Error('SQLAggregate requires OperationConfiguration.GroupBy (non-empty array of source column names).');
+				}
+				if (!Array.isArray(tmpCfg.Aggregates) || tmpCfg.Aggregates.length === 0)
+				{
+					return new Error('SQLAggregate requires OperationConfiguration.Aggregates (non-empty array of {Source, Function: "Sum|Count|Mean|Avg|Min|Max", As}).');
+				}
+				for (let i = 0; i < tmpCfg.Aggregates.length; i++)
+				{
+					let tmpA = tmpCfg.Aggregates[i] || {};
+					let tmpFn = String(tmpA.Function || tmpA.Op || '').toLowerCase();
+					if (!['sum', 'count', 'mean', 'avg', 'min', 'max'].includes(tmpFn))
+					{
+						return new Error('SQLAggregate Aggregates[' + i + '].Function must be one of Sum|Count|Mean|Avg|Min|Max (got "' + (tmpA.Function || tmpA.Op || '') + '").');
+					}
+					if (!tmpA.As) return new Error('SQLAggregate Aggregates[' + i + '].As is required (target column name).');
+				}
+				if (!tmpCfg.GUIDTemplate || typeof tmpCfg.GUIDTemplate !== 'string')
+				{
+					return new Error('SQLAggregate requires OperationConfiguration.GUIDTemplate (e.g. "ORDERBYMONTH_{~D:Record.OrderMonth~}").');
 				}
 				break;
 
@@ -2760,8 +3245,61 @@ class DataMapperConnectionBridge extends libFableServiceProviderBase
 				}
 				break;
 
+			case 'sqljoin':
+				// SQLJoin is the streaming-layout counterpart to Intersection.
+				// Same shape requirements as Intersection PLUS:
+				//   - Projection values must be exactly {~D:Record.X~} or {~D:Related.X~}
+				//     (no static strings, no computed expressions). Anything else can't
+				//     be pushed down to SQL — operator should choose Intersection instead.
+				//   - OrderBy must be a single string field (the source-table PK column),
+				//     not the array-of-objects form Intersection uses. The SQL emitter
+				//     needs a stable, indexed scalar for paged ORDER BY.
+				//   - GUIDTemplate is required (so the destination upsert key is stable).
+				//   - The runtime check that source + related share a connection happens
+				//     at execute time (we don't have the connection topology in scope here).
+				if (!tmpCfg.RelatedEntity)
+				{
+					return new Error('SQLJoin requires OperationConfiguration.RelatedEntity (the related table — must live on the same connection as the source).');
+				}
+				if (!tmpCfg.JoinOn || !tmpCfg.JoinOn.SourceField || !tmpCfg.JoinOn.RelatedField)
+				{
+					return new Error('SQLJoin requires OperationConfiguration.JoinOn = { SourceField, RelatedField }.');
+				}
+				if (!tmpCfg.Projection || typeof tmpCfg.Projection !== 'object' || Object.keys(tmpCfg.Projection).length === 0)
+				{
+					return new Error('SQLJoin requires OperationConfiguration.Projection (non-empty {targetCol: "{~D:Record.X~}" | "{~D:Related.X~}"}).');
+				}
+				{
+					let tmpProjKeys = Object.keys(tmpCfg.Projection);
+					let tmpAllowed = /^\{~D:(Record|Related)\.[A-Za-z_][A-Za-z0-9_]*~\}$/;
+					for (let i = 0; i < tmpProjKeys.length; i++)
+					{
+						let tmpV = tmpCfg.Projection[tmpProjKeys[i]];
+						if (typeof tmpV !== 'string' || !tmpAllowed.test(tmpV))
+						{
+							return new Error('SQLJoin Projection[' + tmpProjKeys[i] + '] must be exactly "{~D:Record.<field>~}" or "{~D:Related.<field>~}" (got ' + JSON.stringify(tmpV) + '). Static or computed projections can\'t be pushed down — use OperationType=Intersection instead.');
+						}
+					}
+				}
+				if (!tmpCfg.OrderBy || typeof tmpCfg.OrderBy !== 'string')
+				{
+					// OrderBy MUST be UNIQUE on the source table — typically the
+					// PK. Keyset pagination (WHERE col > <last seen>) duplicates
+					// rows across pages if the column has ties, and stalls the
+					// cursor if the LAST row of one page shares its OrderBy
+					// value with the first row of the next page. Use the source
+					// PK (e.g. IDSalesOrderLine) unless a different unique
+					// column is justifiable.
+					return new Error('SQLJoin requires OperationConfiguration.OrderBy (string — a stable, indexed, UNIQUE source-table column for keyset pagination, e.g. "IDSalesOrderLine").');
+				}
+				if (!tmpCfg.GUIDTemplate || typeof tmpCfg.GUIDTemplate !== 'string')
+				{
+					return new Error('SQLJoin requires OperationConfiguration.GUIDTemplate (e.g. "OLE_{~D:Record.IDSalesOrderLine~}").');
+				}
+				break;
+
 			default:
-				return new Error('Unknown OperationType "' + pOperation.OperationType + '". Expected Extraction | Aggregation | Histogram | Intersection.');
+				return new Error('Unknown OperationType "' + pOperation.OperationType + '". Expected Extraction | PassthroughClone | Aggregation | SQLAggregate | Histogram | Intersection | SQLJoin.');
 		}
 		return null;
 	}
@@ -2805,10 +3343,13 @@ class DataMapperConnectionBridge extends libFableServiceProviderBase
 		{
 			switch (tmpType)
 			{
-				case 'extraction':   tmpGraph = this._compileExtractionToOperation(pOperation);   break;
-				case 'aggregation':  tmpGraph = this._compileAggregationToOperation(pOperation);  break;
-				case 'histogram':    tmpGraph = this._compileHistogramToOperation(pOperation);    break;
-				case 'intersection': tmpGraph = this._compileIntersectionToOperation(pOperation); break;
+				case 'extraction':       tmpGraph = this._compileExtractionToOperation(pOperation);   break;
+				case 'passthroughclone': tmpGraph = this._compileCloneToOperation(pOperation);       break;
+				case 'aggregation':      tmpGraph = this._compileAggregationToOperation(pOperation);  break;
+				case 'sqlaggregate':     tmpGraph = this._compileSQLAggregateToOperation(pOperation); break;
+				case 'histogram':        tmpGraph = this._compileHistogramToOperation(pOperation);    break;
+				case 'intersection':     tmpGraph = this._compileIntersectionToOperation(pOperation); break;
+				case 'sqljoin':          tmpGraph = this._compileSQLJoinToOperation(pOperation);      break;
 				default:
 					return fCallback(null, { Compiled: false, Reason: 'Unsupported OperationType: ' + pOperation.OperationType });
 			}
@@ -2892,12 +3433,12 @@ class DataMapperConnectionBridge extends libFableServiceProviderBase
 		let tmpSet = new Set();
 		tmpSet.add(tmpGUIDName);
 
-		if (tmpType === 'extraction' || tmpType === 'intersection')
+		if (tmpType === 'extraction' || tmpType === 'intersection' || tmpType === 'passthroughclone' || tmpType === 'sqljoin')
 		{
 			let tmpProj = tmpCfg.Projection || {};
 			Object.keys(tmpProj).forEach((k) => tmpSet.add(k));
 		}
-		else if (tmpType === 'aggregation')
+		else if (tmpType === 'aggregation' || tmpType === 'sqlaggregate')
 		{
 			let tmpGroupBy = Array.isArray(tmpCfg.GroupBy) ? tmpCfg.GroupBy : [];
 			let tmpAggs = Array.isArray(tmpCfg.Aggregates) ? tmpCfg.Aggregates : [];
@@ -2999,6 +3540,29 @@ class DataMapperConnectionBridge extends libFableServiceProviderBase
 						return fCallback(null, null);
 					});
 			});
+	}
+
+	/**
+	 * Walk a UV manifest's TaskOutputs and return whether ANY task reported
+	 * row-level errors (Errors > 0 or Errors[].length > 0) OR an HTTP-shaped
+	 * non-2xx Status. Used by /run-operation so a "Status: Complete" manifest
+	 * with bulk-upsert failures inside doesn't get reported as Success=true.
+	 */
+	_taskOutputsHaveErrors(pTaskOutputs)
+	{
+		if (!pTaskOutputs || typeof pTaskOutputs !== 'object') return false;
+		let tmpKeys = Object.keys(pTaskOutputs);
+		for (let i = 0; i < tmpKeys.length; i++)
+		{
+			let tmpVal = pTaskOutputs[tmpKeys[i]];
+			if (!tmpVal || typeof tmpVal !== 'object') continue;
+			let tmpErrors = tmpVal.Errors;
+			if (typeof tmpErrors === 'number' && tmpErrors > 0) return true;
+			if (Array.isArray(tmpErrors) && tmpErrors.length > 0) return true;
+			if (typeof tmpVal.OrphanErrors === 'number' && tmpVal.OrphanErrors > 0) return true;
+			if (typeof tmpVal.Status === 'number' && tmpVal.Status >= 400) return true;
+		}
+		return false;
 	}
 
 	/**
