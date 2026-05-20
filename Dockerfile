@@ -10,7 +10,7 @@
 # build-essential + python3 are needed here so npm rebuild can compile
 # native bindings (better-sqlite3, etc.). They never make it into the
 # runtime image — see Stage 2.
-FROM node:20-slim AS builder
+FROM node:22-slim AS builder
 WORKDIR /app
 RUN apt-get update && apt-get -y install build-essential python3 && rm -rf /var/lib/apt/lists/*
 COPY package.json ./
@@ -37,7 +37,7 @@ RUN npm prune --omit=dev --ignore-scripts
 # Stage 2: Runtime — node + the lean prebuilt node_modules from Stage 1.
 # No compilers, no fresh npm install, no apt-get. The ~400 MB
 # build-essential layer that used to live here is gone.
-FROM node:20-slim
+FROM node:22-slim
 WORKDIR /app
 COPY package.json ./
 COPY --from=builder /app/node_modules ./node_modules
