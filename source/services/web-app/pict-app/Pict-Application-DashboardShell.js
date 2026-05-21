@@ -9,6 +9,7 @@
 const libPictApplication = require('pict-application');
 const libSectionDashboard = require('./vendor/pict-section-dashboard/source/Pict-Section-Dashboard.js');
 const libSectionModal = require('pict-section-modal');
+const libLoginHelper = require('./_mapper-login-helper.js');
 
 class DashboardShellApplication extends libPictApplication
 {
@@ -44,6 +45,10 @@ class DashboardShellApplication extends libPictApplication
 					AutoRender:                true
 				}),
 			libSectionDashboard);
+
+		// Beacon login overlay + boot-gate helper (shared across all
+		// data-mapper shells; see _mapper-login-helper.js).
+		libLoginHelper.install(this);
 	}
 
 	onAfterInitializeAsync(fCallback)
@@ -54,6 +59,7 @@ class DashboardShellApplication extends libPictApplication
 		{
 			this.pict.views.Dashboards.render();
 		}
+		libLoginHelper.gate(this);
 		return super.onAfterInitializeAsync(fCallback);
 	}
 }

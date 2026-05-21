@@ -27,6 +27,7 @@ const libSectionModal     = require('pict-section-modal');
 const libLayoutView      = require('./views/PictView-MapperShell-Layout.js');
 const libTopNavView      = require('./views/PictView-MapperShell-TopNav.js');
 const libConnectionsView = require('./views/PictView-MapperShell-Connections.js');
+const libLoginHelper     = require('./_mapper-login-helper.js');
 
 const SCOPE_STORAGE_KEY = 'retold.dataMapper.activeScope';
 
@@ -101,6 +102,10 @@ class MapperShellApplication extends libPictApplication
 					AutoRender:                false
 				}),
 			libSectionDashboard);
+
+		// Beacon login overlay + boot-gate (shared with the other
+		// data-mapper shells; see _mapper-login-helper.js).
+		libLoginHelper.install(this);
 	}
 
 	_seedAppData()
@@ -151,6 +156,10 @@ class MapperShellApplication extends libPictApplication
 	{
 		if (this.pict.views['MapperShell-TopNav']) this.pict.views['MapperShell-TopNav'].render();
 		this._renderActiveSection();
+		// Boot gate runs once layout children are guaranteed in the DOM
+		// — same timing as the section renders, which means the overlay
+		// will stack on top of whatever finished painting just before.
+		libLoginHelper.gate(this);
 	}
 
 	// ── Public API (called from inline handlers in TopNav) ───────────

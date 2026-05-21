@@ -13,6 +13,7 @@
 const libPictApplication = require('pict-application');
 const libSectionOperation = require('./vendor/pict-section-operation/source/Pict-Section-Operation.js');
 const libSectionModal = require('pict-section-modal');
+const libLoginHelper = require('./_mapper-login-helper.js');
 
 class OperationShellApplication extends libPictApplication
 {
@@ -35,6 +36,8 @@ class OperationShellApplication extends libPictApplication
 					AutoRender:                true
 				}),
 			libSectionOperation);
+
+		libLoginHelper.install(this);
 	}
 
 	onAfterInitializeAsync(fCallback)
@@ -43,6 +46,7 @@ class OperationShellApplication extends libPictApplication
 		{
 			this.pict.views['Pict-Section-Operation'].render();
 		}
+		libLoginHelper.gate(this);
 		return super.onAfterInitializeAsync(fCallback);
 	}
 }

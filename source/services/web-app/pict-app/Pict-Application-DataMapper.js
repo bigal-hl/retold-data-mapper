@@ -7,6 +7,7 @@
 const libPictApplication = require('pict-application');
 
 const libMapperAPIProvider = require('./providers/Pict-Provider-MapperAPI.js');
+const libLoginHelper = require('./_mapper-login-helper.js');
 
 const libViewLayout = require('./views/PictView-Mapper-Layout.js');
 const libViewBeaconBrowser = require('./views/PictView-Mapper-BeaconBrowser.js');
@@ -29,6 +30,10 @@ class DataMapperApplication extends libPictApplication
 		this.pict.addView('Mapper-FieldMapper', libViewFieldMapper.default_configuration, libViewFieldMapper);
 		this.pict.addView('Mapper-MappingList', libViewMappingList.default_configuration, libViewMappingList);
 		this.pict.addView('Mapper-JSONEditor', libViewJSONEditor.default_configuration, libViewJSONEditor);
+
+		// Beacon login overlay + boot-gate helper.  Shared across every
+		// data-mapper shell; see _mapper-login-helper.js.
+		libLoginHelper.install(this);
 	}
 
 	onAfterInitializeAsync(fCallback)
@@ -75,6 +80,11 @@ class DataMapperApplication extends libPictApplication
 		if (typeof window !== 'undefined') window.DataMapperApp = this;
 
 		this.pict.views['Mapper-Layout'].render();
+
+		// Boot gate: poll /status and overlay the login screen when UV
+		// is in authenticated mode.  Non-blocking — runs in parallel
+		// with the data loads below.
+		libLoginHelper.gate(this);
 
 		let tmpProvider = this.pict.providers.MapperAPI;
 		if (tmpProvider)

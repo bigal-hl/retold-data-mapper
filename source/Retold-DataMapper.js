@@ -510,6 +510,41 @@ class RetoldDataMapper extends libFableServiceProviderBase
 				this._UltravisorStatus = 'Connected';
 				this.fable.log.info(`DataMapper connected to Ultravisor at ${pURL} as [${tmpBeaconName}].`);
 
+				// Mount the WebAuth proxy on data-mapper's Orator server
+				// so its three pict-app shells (Dashboard / Mapper /
+				// Mapping / Operation) require login when the upstream
+				// UV is in non-promiscuous mode.  Same pattern as the
+				// other beacons; non-fatal if it can't install (the
+				// data-mapper still serves its mesh capabilities + UI
+				// in promiscuous mode).
+				try
+				{
+					if (libUltravisorBeacon && libUltravisorBeacon.WebAuth && this.fable.OratorServiceServer)
+					{
+						libUltravisorBeacon.WebAuth.install(this.fable.OratorServiceServer,
+							{
+								UltravisorURL:     pURL,
+								BeaconName:        tmpBeaconName,
+								BeaconID:          () => this._BeaconService && this._BeaconService.getBeaconID
+									? this._BeaconService.getBeaconID() : '',
+								CookieName:        'SessionID',
+								RoutePrefix:       '/1.0/',
+								StatusPath:        '/status',
+								// Gate the data-mapper's REST surface
+								// (/mapper/*) — the in-app dashboards
+								// read from there.  Static UI + auth
+								// routes stay public.
+								GatedPathPrefixes: ['/mapper/'],
+								Log:               this.fable.log
+							});
+						this.fable.log.info('DataMapper: WebAuth mounted /1.0/{Authenticate,Deauthenticate,CheckSession} + /status proxy');
+					}
+				}
+				catch (pWebAuthErr)
+				{
+					this.fable.log.warn(`DataMapper: WebAuth install skipped: ${pWebAuthErr && pWebAuthErr.message}`);
+				}
+
 				// Best-effort self-bootstrap of the configs-databeacon
 				// (platform-configs SQLite connection + OperationConfig /
 				// DashboardConfig tables). Idempotent and gated on the
