@@ -67,7 +67,7 @@
 	"homepage": "https://github.com/fable-retold/retold-data-mapper",
 	"devDependencies": {
 		"better-sqlite3": "^12.9.0",
-		"quackage": "^1.2.3",
+		"quackage": "^1.3.0",
 		"ultravisor": "^1.3.10"
 	},
 	"dependencies": {
@@ -82,10 +82,10 @@
 		"orator": "^6.1.2",
 		"orator-serviceserver-restify": "^2.0.11",
 		"orator-static-server": "^2.1.4",
-		"pict": "^1.0.370",
+		"pict": "^1.0.372",
 		"pict-application": "^1.0.34",
 		"pict-section-login": "^1.0.0",
-		"pict-section-modal": "^1.1.1",
+		"pict-section-modal": "^1.1.4",
 		"pict-view": "^1.0.68",
 		"retold-databeacon": "^1.0.3",
 		"ultravisor-beacon": "^1.0.1"

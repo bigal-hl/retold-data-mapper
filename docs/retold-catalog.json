@@ -1,5 +1,5 @@
 {
-	"Generated": "2026-05-26T18:26:03.387Z",
+	"Generated": "2026-05-26T20:48:43.055Z",
 	"Mode": "module",
 	"GitHubOrg": "fable-retold",
 	"DefaultBranch": "master",
@@ -12,11 +12,16 @@
 		"HasCover": true,
 		"Sidebar": [],
 		"DocFiles": [
+			".nojekyll",
 			"Dockerized-Example-Data.md",
 			"PLAN-PHASE-2B-Operation-Types.md",
 			"PROMPT-PHASE-2B.md",
 			"_brand.json",
-			"_cover.md"
+			"_cover.md",
+			"_version.json",
+			"index.html",
+			"retold-catalog.json",
+			"retold-keyword-index.json"
 		]
 	},
 	"Groups": []
