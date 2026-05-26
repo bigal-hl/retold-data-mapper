@@ -1,7 +1,10 @@
 # Retold Data Mapper — long-running service.
 # Port 8395 by default; serves the cross-beacon mapping web UI + REST
 # API at /mapper/*. Connects to an Ultravisor as a beacon when
-# DATAMAPPER_ULTRAVISOR_URL is set (or via --ultravisor flag).
+# RETOLD_DATA_MAPPER_ULTRAVISOR_URL is set (or via --ultravisor flag).
+# Matching env vars: RETOLD_DATA_MAPPER_BEACON_NAME,
+# RETOLD_DATA_MAPPER_BEACON_PASSWORD (+ _FILE for docker secrets),
+# RETOLD_DATA_MAPPER_MAX_CONCURRENT. See bin/retold-data-mapper.js --help.
 #
 # `npm install` (not `npm ci`) is intentional — package-lock.json is
 # gitignored per the Quackage convention. See BUILDING-AND-PUBLISHING.md.

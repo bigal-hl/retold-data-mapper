@@ -12,6 +12,16 @@
  *   serve (default)     Start the API server + web UI
  *   init                Create the internal SQLite schema
  *
+ * Configuration precedence (highest first):
+ *   1. CLI flags                   (e.g. `--port 9000`)
+ *   2. RETOLD_DATA_MAPPER_* env vars
+ *   3. JSON config file            (--config <path>)
+ *   4. Built-in defaults
+ *
+ * Every secret-bearing env var also honors a `_FILE` suffix
+ * (e.g. RETOLD_DATA_MAPPER_BEACON_PASSWORD_FILE=/run/secrets/foo) so
+ * passwords can be sourced from Docker / k8s secret mounts.
+ *
  * @author Steven Velozo <steven@velozo.com>
  */
 const libPict = require('pict');
@@ -20,6 +30,32 @@ const libRetoldDataMapper = require('../source/Retold-DataMapper.js');
 
 const libFs = require('fs');
 const libPath = require('path');
+
+// ================================================================
+// Env var resolution helper
+// ================================================================
+
+function _envOrFile(pVarName)
+{
+	let tmpValue = process.env[pVarName];
+	if (tmpValue !== undefined && tmpValue !== '')
+	{
+		return tmpValue;
+	}
+	let tmpFilePath = process.env[pVarName + '_FILE'];
+	if (tmpFilePath)
+	{
+		try
+		{
+			return libFs.readFileSync(tmpFilePath, 'utf8').replace(/\s+$/, '');
+		}
+		catch (pErr)
+		{
+			console.warn(`Retold DataMapper: ${pVarName}_FILE set to ${tmpFilePath} but file is unreadable: ${pErr.message}`);
+		}
+	}
+	return undefined;
+}
 
 // ================================================================
 // CLI Argument Parsing
@@ -32,7 +68,40 @@ let _CLIDBPath = null;
 let _CLICommand = 'serve';
 let _CLIUltravisorURL = '';
 let _CLIBeaconName = 'retold-data-mapper';
+let _CLIBeaconPassword = '';
+let _CLIMaxConcurrent = null;
 let _CLIVerbose = false;
+
+// Env-var defaults — parsed first so CLI flags below override them.
+let tmpEnvConfigPath = _envOrFile('RETOLD_DATA_MAPPER_CONFIG_FILE');
+if (tmpEnvConfigPath)
+{
+	try
+	{
+		let tmpResolved = libPath.resolve(tmpEnvConfigPath);
+		_CLIConfig = JSON.parse(libFs.readFileSync(tmpResolved, 'utf8'));
+		console.log(`Retold DataMapper: Loaded config from ${tmpResolved} (RETOLD_DATA_MAPPER_CONFIG_FILE)`);
+	}
+	catch (pErr)
+	{
+		console.error(`Retold DataMapper: RETOLD_DATA_MAPPER_CONFIG_FILE=${tmpEnvConfigPath} unreadable: ${pErr.message}`);
+		process.exit(1);
+	}
+}
+let tmpEnvPort = _envOrFile('RETOLD_DATA_MAPPER_PORT');
+if (tmpEnvPort) { _CLIPort = parseInt(tmpEnvPort, 10); }
+let tmpEnvDBPath = _envOrFile('RETOLD_DATA_MAPPER_DB_PATH');
+if (tmpEnvDBPath) { _CLIDBPath = libPath.resolve(tmpEnvDBPath); }
+let tmpEnvLogPath = _envOrFile('RETOLD_DATA_MAPPER_LOG_PATH');
+if (tmpEnvLogPath) { _CLILogPath = libPath.resolve(tmpEnvLogPath); }
+let tmpEnvUVUrl = _envOrFile('RETOLD_DATA_MAPPER_ULTRAVISOR_URL');
+if (tmpEnvUVUrl) { _CLIUltravisorURL = tmpEnvUVUrl; }
+let tmpEnvBeaconName = _envOrFile('RETOLD_DATA_MAPPER_BEACON_NAME');
+if (tmpEnvBeaconName) { _CLIBeaconName = tmpEnvBeaconName; }
+let tmpEnvBeaconPassword = _envOrFile('RETOLD_DATA_MAPPER_BEACON_PASSWORD');
+if (tmpEnvBeaconPassword) { _CLIBeaconPassword = tmpEnvBeaconPassword; }
+let tmpEnvMaxConcurrent = _envOrFile('RETOLD_DATA_MAPPER_MAX_CONCURRENT');
+if (tmpEnvMaxConcurrent) { _CLIMaxConcurrent = parseInt(tmpEnvMaxConcurrent, 10); }
 
 let tmpArgs = process.argv.slice(2);
 let tmpPositionalIndex = 0;
@@ -96,6 +165,14 @@ for (let i = 0; i < tmpArgs.length; i++)
 	{
 		if (tmpArgs[i + 1]) { _CLIBeaconName = tmpArgs[i + 1]; i++; }
 	}
+	else if (tmpArg === '--password')
+	{
+		if (tmpArgs[i + 1]) { _CLIBeaconPassword = tmpArgs[i + 1]; i++; }
+	}
+	else if (tmpArg === '--max-concurrent')
+	{
+		if (tmpArgs[i + 1]) { _CLIMaxConcurrent = parseInt(tmpArgs[i + 1], 10); i++; }
+	}
 	else if (tmpArg === '--verbose' || tmpArg === '-v')
 	{
 		_CLIVerbose = true;
@@ -133,15 +210,36 @@ Options:
   --db, -d <path>         SQLite database file (default: ./data/datamapper.sqlite)
   --ultravisor, -u <url>  Connect to Ultravisor on startup (e.g. http://localhost:8422)
   --name, -n <name>       Beacon name on the Ultravisor (default: retold-data-mapper)
+  --password <secret>     Beacon auth password for the Ultravisor connection
+  --max-concurrent <n>    Max concurrent beacon work items (default: 5)
   --log, -l [path]        Write log output to a file
   --verbose, -v           Verbose logging
   --help, -h              Show this help
+
+Environment variables (CLI flags take precedence):
+  RETOLD_DATA_MAPPER_PORT              Same as --port
+  RETOLD_DATA_MAPPER_DB_PATH           Same as --db
+  RETOLD_DATA_MAPPER_LOG_PATH          Same as --log
+  RETOLD_DATA_MAPPER_CONFIG_FILE       Same as --config
+
+  RETOLD_DATA_MAPPER_ULTRAVISOR_URL    If set, auto-connect to this Ultravisor on startup
+  RETOLD_DATA_MAPPER_BEACON_NAME       Name to register with (default: retold-data-mapper)
+  RETOLD_DATA_MAPPER_BEACON_PASSWORD   Auth password for the beacon connection
+  RETOLD_DATA_MAPPER_MAX_CONCURRENT    Max concurrent work items (default: 5)
+
+  Any secret-bearing var also accepts a *_FILE suffix that points to a
+  file whose contents become the value (e.g. for docker / k8s secret mounts):
+    RETOLD_DATA_MAPPER_BEACON_PASSWORD_FILE=/run/secrets/uv-pass
 
 Examples:
   retold-data-mapper                                   Start on port 8395
   retold-data-mapper --port 9000                       Custom port
   retold-data-mapper --ultravisor http://localhost:8422  Auto-connect on startup
   retold-data-mapper init                              Create database tables
+
+  RETOLD_DATA_MAPPER_ULTRAVISOR_URL=http://uv:54321 \\
+  RETOLD_DATA_MAPPER_BEACON_PASSWORD_FILE=/run/secrets/uv-pass \\
+    retold-data-mapper                                 Container-style boot with auto-connect
 `);
 }
 
@@ -258,7 +356,9 @@ function commandServe()
 			Ultravisor:
 				{
 					URL: _CLIUltravisorURL,
-					BeaconName: _CLIBeaconName
+					BeaconName: _CLIBeaconName,
+					Password: _CLIBeaconPassword,
+					MaxConcurrent: _CLIMaxConcurrent || 5
 				}
 		});
 
