@@ -4,6 +4,6 @@
 
 - Read the full documentation for usage, configuration, and reference
 
-[GitHub](https://github.com/stevenvelozo/retold-data-mapper)
+[GitHub](https://github.com/fable-retold/retold-data-mapper)
 [Get Started](#retold-data-mapper)
 

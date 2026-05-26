@@ -1,6 +1,6 @@
 # retold-data-mapper
 
-> **[&#9654; Read the Retold-Data-Mapper Documentation](https://stevenvelozo.github.io/retold-data-mapper/)** &mdash; interactive docs with the full API reference.
+> **[&#9654; Read the Retold-Data-Mapper Documentation](https://fable-retold.github.io/retold-data-mapper/)** &mdash; interactive docs with the full API reference.
 
 Cross-beacon schema mapping and data sync. Discovers remote databeacons on the Ultravisor mesh, introspects their schemas, validates a declarative field mapping config, and executes batch syncs — all without direct database access.
 
