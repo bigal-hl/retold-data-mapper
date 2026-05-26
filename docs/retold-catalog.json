@@ -1,0 +1,23 @@
+{
+	"Generated": "2026-05-26T18:26:03.387Z",
+	"Mode": "module",
+	"GitHubOrg": "fable-retold",
+	"DefaultBranch": "master",
+	"Module": {
+		"Name": "retold-data-mapper",
+		"Repo": "retold-data-mapper",
+		"Group": "",
+		"Branch": "master",
+		"HasDocs": true,
+		"HasCover": true,
+		"Sidebar": [],
+		"DocFiles": [
+			"Dockerized-Example-Data.md",
+			"PLAN-PHASE-2B-Operation-Types.md",
+			"PROMPT-PHASE-2B.md",
+			"_brand.json",
+			"_cover.md"
+		]
+	},
+	"Groups": []
+}
