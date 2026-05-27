@@ -12,6 +12,16 @@
  *   serve (default)     Start the API server + web UI
  *   init                Create the internal SQLite schema
  *
+ * Configuration precedence (highest first):
+ *   1. CLI flags                   (e.g. `--port 9000`)
+ *   2. RETOLD_DATA_MAPPER_* env vars
+ *   3. JSON config file            (--config <path>)
+ *   4. Built-in defaults
+ *
+ * Every secret-bearing env var also honors a `_FILE` suffix
+ * (e.g. RETOLD_DATA_MAPPER_BEACON_PASSWORD_FILE=/run/secrets/foo) so
+ * passwords can be sourced from Docker / k8s secret mounts.
+ *
  * @author Steven Velozo <steven@velozo.com>
  */
 const libPict = require('pict');
@@ -20,6 +30,32 @@ const libRetoldDataMapper = require('../source/Retold-DataMapper.js');
 
 const libFs = require('fs');
 const libPath = require('path');
+
+// ================================================================
+// Env var resolution helper
+// ================================================================
+
+function _envOrFile(pVarName)
+{
+	let tmpValue = process.env[pVarName];
+	if (tmpValue !== undefined && tmpValue !== '')
+	{
+		return tmpValue;
+	}
+	let tmpFilePath = process.env[pVarName + '_FILE'];
+	if (tmpFilePath)
+	{
+		try
+		{
+			return libFs.readFileSync(tmpFilePath, 'utf8').replace(/\s+$/, '');
+		}
+		catch (pErr)
+		{
+			console.warn(`Retold DataMapper: ${pVarName}_FILE set to ${tmpFilePath} but file is unreadable: ${pErr.message}`);
+		}
+	}
+	return undefined;
+}
 
 // ================================================================
 // CLI Argument Parsing
@@ -33,8 +69,45 @@ let _CLICommand = 'serve';
 let _CLIUltravisorURL = '';
 let _CLIBeaconName = 'retold-data-mapper';
 let _CLIUserName = '';
-let _CLIPassword = '';
+let _CLIBeaconPassword = '';
+let _CLIMaxConcurrent = null;
 let _CLIVerbose = false;
+
+// Env-var defaults — parsed first so CLI flags below override them.
+let tmpEnvConfigPath = _envOrFile('RETOLD_DATA_MAPPER_CONFIG_FILE');
+if (tmpEnvConfigPath)
+{
+	try
+	{
+		let tmpResolved = libPath.resolve(tmpEnvConfigPath);
+		_CLIConfig = JSON.parse(libFs.readFileSync(tmpResolved, 'utf8'));
+		console.log(`Retold DataMapper: Loaded config from ${tmpResolved} (RETOLD_DATA_MAPPER_CONFIG_FILE)`);
+	}
+	catch (pErr)
+	{
+		console.error(`Retold DataMapper: RETOLD_DATA_MAPPER_CONFIG_FILE=${tmpEnvConfigPath} unreadable: ${pErr.message}`);
+		process.exit(1);
+	}
+}
+let tmpEnvPort = _envOrFile('RETOLD_DATA_MAPPER_PORT');
+if (tmpEnvPort) { _CLIPort = parseInt(tmpEnvPort, 10); }
+let tmpEnvDBPath = _envOrFile('RETOLD_DATA_MAPPER_DB_PATH');
+if (tmpEnvDBPath) { _CLIDBPath = libPath.resolve(tmpEnvDBPath); }
+let tmpEnvLogPath = _envOrFile('RETOLD_DATA_MAPPER_LOG_PATH');
+if (tmpEnvLogPath) { _CLILogPath = libPath.resolve(tmpEnvLogPath); }
+let tmpEnvUVUrl = _envOrFile('RETOLD_DATA_MAPPER_ULTRAVISOR_URL');
+if (tmpEnvUVUrl) { _CLIUltravisorURL = tmpEnvUVUrl; }
+let tmpEnvBeaconName = _envOrFile('RETOLD_DATA_MAPPER_BEACON_NAME');
+if (tmpEnvBeaconName) { _CLIBeaconName = tmpEnvBeaconName; }
+// HTTP-auth username for the dispatcher's /1.0/Authenticate POST.
+// Defaults to BEACON_NAME (most deployments); override against shared
+// UVs where the registered user account differs from the mesh handle.
+let tmpEnvBeaconUser = _envOrFile('RETOLD_DATA_MAPPER_BEACON_USER');
+if (tmpEnvBeaconUser) { _CLIUserName = tmpEnvBeaconUser; }
+let tmpEnvBeaconPassword = _envOrFile('RETOLD_DATA_MAPPER_BEACON_PASSWORD');
+if (tmpEnvBeaconPassword) { _CLIBeaconPassword = tmpEnvBeaconPassword; }
+let tmpEnvMaxConcurrent = _envOrFile('RETOLD_DATA_MAPPER_MAX_CONCURRENT');
+if (tmpEnvMaxConcurrent) { _CLIMaxConcurrent = parseInt(tmpEnvMaxConcurrent, 10); }
 
 let tmpArgs = process.argv.slice(2);
 let tmpPositionalIndex = 0;
@@ -100,7 +173,7 @@ for (let i = 0; i < tmpArgs.length; i++)
 	}
 	else if (tmpArg === '--password' || tmpArg === '-w')
 	{
-		if (tmpArgs[i + 1]) { _CLIPassword = tmpArgs[i + 1]; i++; }
+		if (tmpArgs[i + 1]) { _CLIBeaconPassword = tmpArgs[i + 1]; i++; }
 	}
 	else if (tmpArg === '--user' || tmpArg === '-U')
 	{
@@ -114,6 +187,10 @@ for (let i = 0; i < tmpArgs.length; i++)
 		// service-account email. When omitted, defaults to --name for
 		// backward compat with solo/promiscuous setups.
 		if (tmpArgs[i + 1]) { _CLIUserName = tmpArgs[i + 1]; i++; }
+	}
+	else if (tmpArg === '--max-concurrent')
+	{
+		if (tmpArgs[i + 1]) { _CLIMaxConcurrent = parseInt(tmpArgs[i + 1], 10); i++; }
 	}
 	else if (tmpArg === '--verbose' || tmpArg === '-v')
 	{
@@ -152,28 +229,50 @@ Options:
   --db, -d <path>         SQLite database file (default: ./data/datamapper.sqlite)
   --ultravisor, -u <url>  Connect to Ultravisor on startup (e.g. http://localhost:8422)
   --name, -n <name>       Beacon name on the Ultravisor (default: retold-data-mapper)
-  --user, -U <user>       HTTP auth username on the Ultravisor (env: DATAMAPPER_BEACON_USER).
-                          Defaults to --name. Set this when the beacon's mesh
-                          name differs from the registered USER account (e.g.
-                          on shared/QA UVs the beacon is "<svc>-data-mapper"
-                          but the auth-beacon user account is the operator's
-                          email).
-  --password, -w <pw>     Beacon password for Ultravisor auth (env: DATAMAPPER_BEACON_PASSWORD)
+  --user, -U <user>       HTTP auth username on the Ultravisor (env:
+                          RETOLD_DATA_MAPPER_BEACON_USER). Defaults to --name.
+                          Set this when the beacon's mesh name differs from
+                          the registered USER account (e.g. on shared/QA UVs
+                          the beacon is "<svc>-data-mapper" but the auth-
+                          beacon user account is the operator's email).
+  --password, -w <secret> Beacon auth password for the Ultravisor connection
+  --max-concurrent <n>    Max concurrent beacon work items (default: 5)
   --log, -l [path]        Write log output to a file
   --verbose, -v           Verbose logging
   --help, -h              Show this help
 
-Environment variables (override defaults; CLI flags win over env vars):
-  DATAMAPPER_ULTRAVISOR_URL   Same as --ultravisor
-  DATAMAPPER_BEACON_NAME      Same as --name
-  DATAMAPPER_BEACON_USER      Same as --user (defaults to BEACON_NAME)
-  DATAMAPPER_BEACON_PASSWORD  Same as --password
+Environment variables (CLI flags take precedence):
+  RETOLD_DATA_MAPPER_PORT              Same as --port
+  RETOLD_DATA_MAPPER_DB_PATH           Same as --db
+  RETOLD_DATA_MAPPER_LOG_PATH          Same as --log
+  RETOLD_DATA_MAPPER_CONFIG_FILE       Same as --config
+
+  RETOLD_DATA_MAPPER_ULTRAVISOR_URL    If set, auto-connect to this Ultravisor on startup
+  RETOLD_DATA_MAPPER_BEACON_NAME       Name to register with (default: retold-data-mapper)
+  RETOLD_DATA_MAPPER_BEACON_USER       HTTP auth username (default: BEACON_NAME).
+                                       Override on shared UVs where the auth-
+                                       beacon user account differs from the
+                                       beacon's mesh handle.
+  RETOLD_DATA_MAPPER_BEACON_PASSWORD   Auth password for the beacon connection
+  RETOLD_DATA_MAPPER_MAX_CONCURRENT    Max concurrent work items (default: 5)
+
+  Any secret-bearing var also accepts a *_FILE suffix that points to a
+  file whose contents become the value (e.g. for docker / k8s secret mounts):
+    RETOLD_DATA_MAPPER_BEACON_PASSWORD_FILE=/run/secrets/uv-pass
+
+  Legacy aliases (deprecated, kept for backward-compat with older deployers):
+    DATAMAPPER_ULTRAVISOR_URL, DATAMAPPER_BEACON_NAME,
+    DATAMAPPER_BEACON_USER, DATAMAPPER_BEACON_PASSWORD
 
 Examples:
   retold-data-mapper                                   Start on port 8395
   retold-data-mapper --port 9000                       Custom port
   retold-data-mapper --ultravisor http://localhost:8422  Auto-connect on startup
   retold-data-mapper init                              Create database tables
+
+  RETOLD_DATA_MAPPER_ULTRAVISOR_URL=http://uv:54321 \\
+  RETOLD_DATA_MAPPER_BEACON_PASSWORD_FILE=/run/secrets/uv-pass \\
+    retold-data-mapper                                 Container-style boot with auto-connect
 `);
 }
 
@@ -206,18 +305,14 @@ if (_CLIConfig)
 	Object.assign(_Settings, _CLIConfig);
 }
 
-// Resolve Ultravisor settings with this precedence:
-//   1. CLI flags (--ultravisor / --name / --password)
-//   2. DATAMAPPER_* environment variables (so docker-run can inject them
-//      without per-deploy CLI plumbing)
-//   3. The loaded config file's Settings.Ultravisor.{URL,BeaconName,Password}
+// Final fallback layer for Ultravisor settings, in precedence order:
+//   1. CLI flags (already populated by the for-loop above)
+//   2. RETOLD_DATA_MAPPER_* env vars (already populated near top of file)
+//   3. Legacy DATAMAPPER_* env vars (kept for older deployers; the lastrada
+//      launcher currently emits these — remove once it migrates)
+//   4. The loaded config file's Settings.Ultravisor.{URL,BeaconName,...}
 //
-// The CLI used to drop the password on the floor entirely — the service
-// constructor below only forwarded URL + BeaconName, so any beacon
-// joining a Ultravisor whose auth-beacon requires real credentials
-// would silently auth with "" and the dispatch loop would later return
-// empty bodies. Filling the gap lets retold-data-mapper register
-// against a real UV the same way retold-databeacon does.
+// This block runs LAST so CLI + RETOLD_DATA_MAPPER_* always win.
 if (!_CLIUltravisorURL)
 {
 	_CLIUltravisorURL = process.env.DATAMAPPER_ULTRAVISOR_URL
@@ -230,9 +325,9 @@ if (!_CLIBeaconName || _CLIBeaconName === 'retold-data-mapper')
 		|| (_Settings.Ultravisor && _Settings.Ultravisor.BeaconName);
 	if (tmpEnvName) _CLIBeaconName = tmpEnvName;
 }
-if (!_CLIPassword)
+if (!_CLIBeaconPassword)
 {
-	_CLIPassword = process.env.DATAMAPPER_BEACON_PASSWORD
+	_CLIBeaconPassword = process.env.DATAMAPPER_BEACON_PASSWORD
 		|| (_Settings.Ultravisor && _Settings.Ultravisor.Password)
 		|| '';
 }
@@ -329,7 +424,8 @@ function commandServe()
 					URL: _CLIUltravisorURL,
 					BeaconName: _CLIBeaconName,
 					UserName: _CLIUserName,
-					Password: _CLIPassword
+					Password: _CLIBeaconPassword,
+					MaxConcurrent: _CLIMaxConcurrent || 5
 				}
 		});
 
