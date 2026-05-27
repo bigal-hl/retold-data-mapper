@@ -480,6 +480,14 @@ class RetoldDataMapper extends libFableServiceProviderBase
 			{
 				ServerURL: pURL,
 				Name: tmpBeaconName,
+				// UserName separates the HTTP-auth identity (used by
+				// _authenticate for the WS upgrade cookie) from the mesh
+				// handle Name (used for AffinityKey routing). Without
+				// this, the BeaconService's own HTTP auth tries to login
+				// as the beacon name, which fails on shared UVs whose
+				// auth-beacon doesn't have a user account by that name.
+				// Needs ultravisor-beacon >= 1.0.3.
+				UserName: tmpUserName,
 				Password: tmpPassword,
 				MaxConcurrent: tmpMaxConcurrent,
 				StagingPath: process.cwd()
