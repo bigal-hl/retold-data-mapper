@@ -864,5 +864,197 @@ suite
 				);
 			}
 		);
+
+		// ============================================================
+		// Execute-WriteTargetRaw — clone-to-lake raw-archive wrapper
+		// ============================================================
+		suite
+		(
+			'Execute-WriteTargetRaw',
+			function ()
+			{
+				const libExecuteWriteTargetRaw = require('../source/services/executors/Execute-WriteTargetRaw.js');
+				const libCrypto = require('crypto');
+
+				function _md5Hex(pString)
+				{
+					return libCrypto.createHash('md5').update(pString).digest('hex');
+				}
+
+				function _makeMockTask(pCapturedWorkItems, pDispatchOverride)
+				{
+					let tmpCoordinator =
+					{
+						dispatchAndWait: function (pWorkItem, fCallback)
+						{
+							pCapturedWorkItems.push(pWorkItem);
+							if (pDispatchOverride) return pDispatchOverride(pWorkItem, fCallback);
+							return fCallback(null, { Outputs: { Status: 200 } });
+						}
+					};
+					return {
+						fable:
+						{
+							servicesMap:
+							{
+								UltravisorBeaconCoordinator: { ubc: tmpCoordinator }
+							}
+						}
+					};
+				}
+
+				test
+				(
+					'wraps each record into { Identity, RawJSON, RecordMD5, IngestedAt, SourceTable }',
+					function (fDone)
+					{
+						let tmpCaptured = [];
+						let tmpTask = _makeMockTask(tmpCaptured);
+						let tmpSourceRecord = { IDCustomer: 42, CompanyName: 'Acme', ContactEmail: 'x@y.z' };
+						let tmpSettings =
+						{
+							BeaconName:     'lake-databeacon',
+							ConnectionHash: 'lake-main',
+							Entity:         'C134_PRODLASTRADA_RAW_Customer',
+							Comprehension:  { Customer: { 'GUID-1': tmpSourceRecord } },
+							IdentityField:  'IDCustomer',
+							SourceTable:    'Customer',
+							SyncMode:       'Upsert'
+						};
+
+						libExecuteWriteTargetRaw(tmpTask, tmpSettings, {}, function (pErr, pResult)
+						{
+							libAssert.strictEqual(pErr, null);
+							libAssert.strictEqual(pResult.EventToFire, 'Complete');
+							libAssert.strictEqual(pResult.Outputs.Written, 1);
+							libAssert.strictEqual(pResult.Outputs.Errors, 0);
+							libAssert.strictEqual(tmpCaptured.length, 1);
+
+							let tmpBody = JSON.parse(tmpCaptured[0].Settings.Body);
+							libAssert.strictEqual(tmpBody.Identity, 42);
+							libAssert.strictEqual(tmpBody.SourceTable, 'Customer');
+							libAssert.strictEqual(typeof tmpBody.IngestedAt, 'string');
+							libAssert.ok(/^\d{4}-\d{2}-\d{2}T/.test(tmpBody.IngestedAt));
+							libAssert.strictEqual(tmpBody.RawJSON, JSON.stringify(tmpSourceRecord));
+							libAssert.strictEqual(tmpBody.RecordMD5, _md5Hex(JSON.stringify(tmpSourceRecord)));
+							libAssert.strictEqual(tmpCaptured[0].Settings.Path, '/1.0/lake-main/C134_PRODLASTRADA_RAW_Customer');
+							libAssert.strictEqual(tmpCaptured[0].AffinityKey, 'lake-databeacon');
+							fDone();
+						});
+					}
+				);
+
+				test
+				(
+					'falls back to the comprehension key when IdentityField is missing on the record',
+					function (fDone)
+					{
+						let tmpCaptured = [];
+						let tmpTask = _makeMockTask(tmpCaptured);
+						let tmpSettings =
+						{
+							BeaconName:     'lake-databeacon',
+							ConnectionHash: 'lake-main',
+							Entity:         'C134_PRODLASTRADA_RAW_Author',
+							Comprehension:  { Author: { 'GUID-ABC': { FullName: 'Anon', BirthYear: 1900 } } },
+							IdentityField:  'IDAuthor',
+							SourceTable:    'Author'
+						};
+
+						libExecuteWriteTargetRaw(tmpTask, tmpSettings, {}, function (pErr, pResult)
+						{
+							libAssert.strictEqual(pErr, null);
+							libAssert.strictEqual(pResult.EventToFire, 'Complete');
+							let tmpBody = JSON.parse(tmpCaptured[0].Settings.Body);
+							libAssert.strictEqual(tmpBody.Identity, 'GUID-ABC');
+							fDone();
+						});
+					}
+				);
+
+				test
+				(
+					'unchanged record produces identical RecordMD5 across runs',
+					function (fDone)
+					{
+						let tmpCaptured = [];
+						let tmpTask = _makeMockTask(tmpCaptured);
+						let tmpRecord = { IDFoo: 1, Name: 'stable' };
+						let tmpSettings =
+						{
+							BeaconName:     'lake-databeacon',
+							ConnectionHash: 'lake-main',
+							Entity:         'C134_PRODLASTRADA_RAW_Foo',
+							Comprehension:  { Foo: { 'k1': tmpRecord } },
+							IdentityField:  'IDFoo',
+							SourceTable:    'Foo'
+						};
+
+						libExecuteWriteTargetRaw(tmpTask, tmpSettings, {}, function ()
+						{
+							let tmpFirstMD5 = JSON.parse(tmpCaptured[0].Settings.Body).RecordMD5;
+							tmpCaptured.length = 0;
+							libExecuteWriteTargetRaw(tmpTask, tmpSettings, {}, function ()
+							{
+								let tmpSecondMD5 = JSON.parse(tmpCaptured[0].Settings.Body).RecordMD5;
+								libAssert.strictEqual(tmpFirstMD5, tmpSecondMD5);
+								fDone();
+							});
+						});
+					}
+				);
+
+				test
+				(
+					'reports Error when required settings are missing',
+					function (fDone)
+					{
+						let tmpCaptured = [];
+						let tmpTask = _makeMockTask(tmpCaptured);
+						let tmpSettings = { BeaconName: '', ConnectionHash: '', Entity: '', Comprehension: {} };
+
+						libExecuteWriteTargetRaw(tmpTask, tmpSettings, {}, function (pErr, pResult)
+						{
+							libAssert.strictEqual(pErr, null);
+							libAssert.strictEqual(pResult.EventToFire, 'Error');
+							libAssert.strictEqual(tmpCaptured.length, 0);
+							fDone();
+						});
+					}
+				);
+
+				test
+				(
+					'counts HTTP >= 400 responses as errors',
+					function (fDone)
+					{
+						let tmpCaptured = [];
+						let tmpTask = _makeMockTask(tmpCaptured, function (pWorkItem, fCallback)
+						{
+							return fCallback(null, { Outputs: { Status: 500 } });
+						});
+						let tmpSettings =
+						{
+							BeaconName:     'lake-databeacon',
+							ConnectionHash: 'lake-main',
+							Entity:         'C134_PRODLASTRADA_RAW_Foo',
+							Comprehension:  { Foo: { 'k1': { IDFoo: 1 } } },
+							IdentityField:  'IDFoo',
+							SourceTable:    'Foo'
+						};
+
+						libExecuteWriteTargetRaw(tmpTask, tmpSettings, {}, function (pErr, pResult)
+						{
+							libAssert.strictEqual(pErr, null);
+							libAssert.strictEqual(pResult.EventToFire, 'Error');
+							libAssert.strictEqual(pResult.Outputs.Written, 0);
+							libAssert.strictEqual(pResult.Outputs.Errors, 1);
+							libAssert.strictEqual(pResult.Outputs.ErrorLog[0].Error, 'HTTP 500');
+							fDone();
+						});
+					}
+				);
+			}
+		);
 	}
 );

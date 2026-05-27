@@ -1,6 +1,6 @@
 {
 	"name": "retold-data-mapper",
-	"version": "1.0.2",
+	"version": "1.0.3",
 	"description": "Standalone service for cross-beacon schema mapping — runs its own Orator + Pict web UI on its own port, dispatches mesh operations via fable-ultravisor-client, registers DataMapper capabilities on any Ultravisor as a beacon.",
 	"main": "source/Retold-DataMapper.js",
 	"bin": {
@@ -68,12 +68,16 @@
 	"devDependencies": {
 		"better-sqlite3": "^12.9.0",
 		"quackage": "^1.3.0",
+<<<<<<< HEAD
 		"ultravisor": "^1.3.10"
+=======
+		"ultravisor": "^1.3.11"
+>>>>>>> 11f6ca9 ('Fixed auth bug with secure ultravisor environments')
 	},
 	"dependencies": {
 		"fable": "^3.1.75",
 		"fable-serviceproviderbase": "^3.0.19",
-		"fable-ultravisor-client": "^1.0.0",
+		"fable-ultravisor-client": "^1.0.1",
 		"meadow": "^2.0.41",
 		"meadow-connection-manager": "^1.1.2",
 		"meadow-connection-sqlite": "^1.0.20",
@@ -87,7 +91,7 @@
 		"pict-section-login": "^1.0.0",
 		"pict-section-modal": "^1.1.4",
 		"pict-view": "^1.0.68",
-		"retold-databeacon": "^1.0.3",
-		"ultravisor-beacon": "^1.0.1"
+		"retold-databeacon": "^1.0.5",
+		"ultravisor-beacon": "^1.0.2"
 	}
 }

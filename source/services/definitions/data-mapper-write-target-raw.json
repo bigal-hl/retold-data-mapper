@@ -1,0 +1,45 @@
+{
+	"Hash": "data-mapper-write-target-raw",
+	"Type": "data-mapper-write-target-raw",
+	"Name": "Write to Target Beacon (Raw JSON)",
+	"Description": "Writes a comprehension to a target entity on another DataBeacon, but wraps each source record into a raw-archive row { Identity, RawJSON, RecordMD5, IngestedAt, SourceTable } before sending. Use for clone-to-lake passes that preserve the source record verbatim rather than unfolding columns. The RecordMD5 lets later passes detect unchanged records cheaply.",
+	"Category": "data",
+	"Capability": "Data Mapper",
+	"Action": "WriteTargetRaw",
+	"Tier": "Engine",
+
+	"EventInputs": [
+		{ "Name": "Execute", "Description": "Write the comprehension to the target beacon as raw-archive rows" }
+	],
+
+	"EventOutputs": [
+		{ "Name": "Complete", "Description": "All records written" },
+		{ "Name": "Error", "IsError": true, "Description": "Write failed" }
+	],
+
+	"SettingsInputs": [
+		{ "Name": "BeaconName", "DataType": "String", "Required": true, "Description": "Target beacon name for mesh routing" },
+		{ "Name": "ConnectionHash", "DataType": "String", "Required": true, "Description": "URL-safe slug of the target connection name" },
+		{ "Name": "Entity", "DataType": "String", "Required": true, "Description": "Target entity name (e.g. C134_PRODLASTRADA_RAW_Customer)" },
+		{ "Name": "Comprehension", "DataType": "Object", "Required": true, "Description": "Comprehension to write: { Entity: { GUID: record, ... } }" },
+		{ "Name": "IdentityField", "DataType": "String", "Required": false, "Description": "Field on each source record to preserve as the Identity column (e.g. IDCustomer). If absent or missing on the record, falls back to the comprehension key (typically the GUID)." },
+		{ "Name": "SourceTable", "DataType": "String", "Required": false, "Description": "Original source table name; stored verbatim on every row in the SourceTable column for round-trip identification." },
+		{ "Name": "SyncMode", "DataType": "String", "Required": false, "Description": "InsertOnly (default) or Upsert. Upsert matches on Identity + SourceTable + RecordMD5 to skip unchanged rows." }
+	],
+
+	"StateOutputs": [
+		{ "Name": "Written", "DataType": "Number", "Description": "Count of raw rows written" },
+		{ "Name": "Errors", "DataType": "Number", "Description": "Count of write errors" },
+		{ "Name": "ErrorLog", "DataType": "Array", "Description": "Error details" }
+	],
+
+	"DefaultSettings": {
+		"BeaconName": "",
+		"ConnectionHash": "",
+		"Entity": "",
+		"Comprehension": {},
+		"IdentityField": "",
+		"SourceTable": "",
+		"SyncMode": "InsertOnly"
+	}
+}

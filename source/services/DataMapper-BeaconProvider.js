@@ -77,28 +77,64 @@ class DataMapperBeaconProvider extends libFableServiceProviderBase
 	 * Configure the Ultravisor client for cross-beacon dispatch.
 	 * Must be called before beacon handlers execute.
 	 *
+	 * The dispatcher client authenticates as a USER (with a session
+	 * cookie attached to subsequent POSTs), separate from the beacon-
+	 * registration WebSocket the BeaconService maintains. Pass the same
+	 * service-account credentials the BeaconService uses so the
+	 * resulting session has the same permission level — otherwise
+	 * subsequent dispatch calls (and any /mapper/* REST calls that ride
+	 * on this client) get "Authentication required." from UV's API
+	 * server even though the WebSocket-side beacon is registered fine.
+	 *
+	 * Default `UserName: 'data-mapper'` with empty password matches the
+	 * lab's promiscuous-UV preset (the synth-demo target) where UV
+	 * doesn't actually check credentials. Against a UV with a real auth-
+	 * beacon, callers MUST pass real creds.
+	 *
+	 * IMPORTANT: callers MUST serialize on fCallback before issuing any
+	 * dispatch. Without it the bootstrap pass below races the async auth
+	 * POST and dispatches go out with no session cookie attached — UV
+	 * replies 401 "Authentication required." even though both sides have
+	 * valid credentials.
+	 *
 	 * @param {string} pUltravisorURL — e.g. "http://localhost:18422"
+	 * @param {string} [pUserName='data-mapper']
+	 * @param {string} [pPassword='']
+	 * @param {function} [fCallback] — function(pError) — fires after auth completes
 	 */
-	configureClient(pUltravisorURL)
+	configureClient(pUltravisorURL, pUserName, pPassword, fCallback)
 	{
+		let tmpUserName = (pUserName === undefined || pUserName === null || pUserName === '') ? 'data-mapper' : pUserName;
+		let tmpPassword = (pPassword === undefined || pPassword === null) ? '' : pPassword;
+		let fDone = (typeof fCallback === 'function') ? fCallback : function () {};
 		this.fable.serviceManager.addServiceTypeIfNotExists('UltravisorClient', libFableUltravisorClient);
 		this._Client = this.fable.serviceManager.instantiateServiceProvider('UltravisorClient',
 			{
 				UltravisorURL: pUltravisorURL,
-				UserName: 'data-mapper',
-				Password: ''
+				UserName: tmpUserName,
+				Password: tmpPassword
 			});
 
 		this._Client.authenticate((pError) =>
 		{
 			if (pError)
 			{
-				this.log.error(`DataMapperBeaconProvider: client auth failed — ${pError.message}`);
+				this.log.error(`DataMapperBeaconProvider: client auth failed for [${tmpUserName}] — ${pError.message}`);
+				return fDone(pError);
+			}
+			let tmpCookie = (typeof this._Client.getSessionCookie === 'function') ? this._Client.getSessionCookie() : null;
+			if (!tmpCookie)
+			{
+				// Auth succeeded but UV sent no Set-Cookie header — every
+				// subsequent dispatch will 401 since the request can't
+				// carry a session.
+				this.log.warn(`DataMapperBeaconProvider: client authenticated as [${tmpUserName}] against ${pUltravisorURL} but UV returned no session cookie — dispatches will 401.`);
 			}
 			else
 			{
-				this.log.info(`DataMapperBeaconProvider: client authenticated against ${pUltravisorURL}`);
+				this.log.info(`DataMapperBeaconProvider: client authenticated as [${tmpUserName}] against ${pUltravisorURL} (session cookie set).`);
 			}
+			return fDone(null);
 		});
 	}
 

@@ -460,6 +460,13 @@ class RetoldDataMapper extends libFableServiceProviderBase
 		let tmpBeaconName = pBeaconName || this.options.Ultravisor.BeaconName || 'retold-data-mapper';
 		let tmpPassword = pPassword || (this.options.Ultravisor && this.options.Ultravisor.Password) || '';
 		let tmpMaxConcurrent = (this.options.Ultravisor && this.options.Ultravisor.MaxConcurrent) || 5;
+		// HTTP-auth username for the dispatcher's /1.0/Authenticate POST.
+		// When set (typical against a shared/QA UV where the beacon name
+		// isn't a registered user account), use it for the user session
+		// the dispatcher relies on for /Beacon/Work/Dispatch + /mapper/*
+		// REST. When unset, fall back to the beacon name so existing
+		// promiscuous-UV deployments keep working without re-wiring.
+		let tmpUserName = (this.options.Ultravisor && this.options.Ultravisor.UserName) || tmpBeaconName;
 
 		if (this._BeaconService)
 		{
@@ -480,7 +487,6 @@ class RetoldDataMapper extends libFableServiceProviderBase
 
 		this.fable.serviceManager.addServiceTypeIfNotExists('DataMapperBeaconProvider', libDataMapperBeaconProvider);
 		this._BeaconProvider = this.fable.serviceManager.instantiateServiceProviderIfNotExists('DataMapperBeaconProvider');
-		this._BeaconProvider.configureClient(pURL);
 		this._BeaconProvider.registerCapabilities(this._BeaconService);
 
 		// Keep a direct client handle for /mapper/* REST dispatches
@@ -488,20 +494,40 @@ class RetoldDataMapper extends libFableServiceProviderBase
 		this._UltravisorClient = this.fable.instantiateServiceProviderWithoutRegistration('UltravisorClient',
 			{
 				UltravisorURL: pURL,
-				UserName: tmpBeaconName,
+				UserName: tmpUserName,
 				Password: tmpPassword
 			});
 		this._UltravisorURL = pURL;
 
-		this._UltravisorClient.authenticate((pAuthError) =>
+		// Authenticate the dispatcher's client BEFORE enable/bootstrap.
+		// Hand the same service-account creds the BeaconService uses to
+		// the dispatcher client too. Without this the dispatcher
+		// hardcodes 'data-mapper' / '' and any UV with a real auth-
+		// beacon rejects subsequent /Beacon/Work/Dispatch calls with
+		// "Authentication required." — exact symptom: CloneStream's
+		// inner MeadowProxy.Request work items never reach the target
+		// beacon, the manifest shows Pulled:0 with no error surfaced.
+		//
+		// IMPORTANT: this MUST complete before enable/bootstrap runs
+		// because bootstrap's first _dispatch fires immediately and
+		// needs the session cookie on the request. configureClient now
+		// takes a callback for that reason.
+		this._BeaconProvider.configureClient(pURL, tmpUserName, tmpPassword, (pDispatcherAuthError) =>
 		{
-			if (pAuthError)
+			if (pDispatcherAuthError)
 			{
-				this.fable.log.warn(`UltravisorClient auth failed: ${pAuthError.message || pAuthError}`);
+				this.fable.log.warn(`DataMapperBeaconProvider dispatcher auth failed: ${pDispatcherAuthError.message || pDispatcherAuthError}. Cross-beacon dispatch will 401.`);
 			}
 
-			this._BeaconService.enable((pEnableError) =>
+			this._UltravisorClient.authenticate((pAuthError) =>
 			{
+				if (pAuthError)
+				{
+					this.fable.log.warn(`UltravisorClient auth failed: ${pAuthError.message || pAuthError}`);
+				}
+
+				this._BeaconService.enable((pEnableError) =>
+				{
 				if (pEnableError)
 				{
 					this._UltravisorStatus = 'Failed';
@@ -583,6 +609,7 @@ class RetoldDataMapper extends libFableServiceProviderBase
 				}
 				return fCallback(null);
 			});
+		});
 		});
 	}
 

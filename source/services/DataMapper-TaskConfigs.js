@@ -33,5 +33,9 @@ module.exports =
 	{
 		Definition: require('./definitions/data-mapper-write-target.json'),
 		Execute: require('./executors/Execute-WriteTarget.js')
+	},
+	{
+		Definition: require('./definitions/data-mapper-write-target-raw.json'),
+		Execute: require('./executors/Execute-WriteTargetRaw.js')
 	}
 ];

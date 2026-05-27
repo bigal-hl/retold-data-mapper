@@ -32,6 +32,8 @@ let _CLIDBPath = null;
 let _CLICommand = 'serve';
 let _CLIUltravisorURL = '';
 let _CLIBeaconName = 'retold-data-mapper';
+let _CLIUserName = '';
+let _CLIPassword = '';
 let _CLIVerbose = false;
 
 let tmpArgs = process.argv.slice(2);
@@ -96,6 +98,23 @@ for (let i = 0; i < tmpArgs.length; i++)
 	{
 		if (tmpArgs[i + 1]) { _CLIBeaconName = tmpArgs[i + 1]; i++; }
 	}
+	else if (tmpArg === '--password' || tmpArg === '-w')
+	{
+		if (tmpArgs[i + 1]) { _CLIPassword = tmpArgs[i + 1]; i++; }
+	}
+	else if (tmpArg === '--user' || tmpArg === '-U')
+	{
+		// HTTP-auth username for the dispatcher's /1.0/Authenticate POST.
+		// The beacon mesh identity (--name) is what UV uses for routing,
+		// AffinityKey, etc. — but the HTTP auth that backs cross-beacon
+		// /Beacon/Work/Dispatch needs a real USER account registered on
+		// the auth-beacon. In most deployments those are the same, but
+		// against shared UVs (e.g. QA) the data-mapper's beacon name is
+		// just a mesh handle and the HTTP auth has to use the operator's
+		// service-account email. When omitted, defaults to --name for
+		// backward compat with solo/promiscuous setups.
+		if (tmpArgs[i + 1]) { _CLIUserName = tmpArgs[i + 1]; i++; }
+	}
 	else if (tmpArg === '--verbose' || tmpArg === '-v')
 	{
 		_CLIVerbose = true;
@@ -133,9 +152,22 @@ Options:
   --db, -d <path>         SQLite database file (default: ./data/datamapper.sqlite)
   --ultravisor, -u <url>  Connect to Ultravisor on startup (e.g. http://localhost:8422)
   --name, -n <name>       Beacon name on the Ultravisor (default: retold-data-mapper)
+  --user, -U <user>       HTTP auth username on the Ultravisor (env: DATAMAPPER_BEACON_USER).
+                          Defaults to --name. Set this when the beacon's mesh
+                          name differs from the registered USER account (e.g.
+                          on shared/QA UVs the beacon is "<svc>-data-mapper"
+                          but the auth-beacon user account is the operator's
+                          email).
+  --password, -w <pw>     Beacon password for Ultravisor auth (env: DATAMAPPER_BEACON_PASSWORD)
   --log, -l [path]        Write log output to a file
   --verbose, -v           Verbose logging
   --help, -h              Show this help
+
+Environment variables (override defaults; CLI flags win over env vars):
+  DATAMAPPER_ULTRAVISOR_URL   Same as --ultravisor
+  DATAMAPPER_BEACON_NAME      Same as --name
+  DATAMAPPER_BEACON_USER      Same as --user (defaults to BEACON_NAME)
+  DATAMAPPER_BEACON_PASSWORD  Same as --password
 
 Examples:
   retold-data-mapper                                   Start on port 8395
@@ -172,6 +204,43 @@ let _Settings =
 if (_CLIConfig)
 {
 	Object.assign(_Settings, _CLIConfig);
+}
+
+// Resolve Ultravisor settings with this precedence:
+//   1. CLI flags (--ultravisor / --name / --password)
+//   2. DATAMAPPER_* environment variables (so docker-run can inject them
+//      without per-deploy CLI plumbing)
+//   3. The loaded config file's Settings.Ultravisor.{URL,BeaconName,Password}
+//
+// The CLI used to drop the password on the floor entirely — the service
+// constructor below only forwarded URL + BeaconName, so any beacon
+// joining a Ultravisor whose auth-beacon requires real credentials
+// would silently auth with "" and the dispatch loop would later return
+// empty bodies. Filling the gap lets retold-data-mapper register
+// against a real UV the same way retold-databeacon does.
+if (!_CLIUltravisorURL)
+{
+	_CLIUltravisorURL = process.env.DATAMAPPER_ULTRAVISOR_URL
+		|| (_Settings.Ultravisor && _Settings.Ultravisor.URL)
+		|| '';
+}
+if (!_CLIBeaconName || _CLIBeaconName === 'retold-data-mapper')
+{
+	let tmpEnvName = process.env.DATAMAPPER_BEACON_NAME
+		|| (_Settings.Ultravisor && _Settings.Ultravisor.BeaconName);
+	if (tmpEnvName) _CLIBeaconName = tmpEnvName;
+}
+if (!_CLIPassword)
+{
+	_CLIPassword = process.env.DATAMAPPER_BEACON_PASSWORD
+		|| (_Settings.Ultravisor && _Settings.Ultravisor.Password)
+		|| '';
+}
+if (!_CLIUserName)
+{
+	_CLIUserName = process.env.DATAMAPPER_BEACON_USER
+		|| (_Settings.Ultravisor && _Settings.Ultravisor.UserName)
+		|| '';
 }
 
 if (_CLILogPath)
@@ -258,7 +327,9 @@ function commandServe()
 			Ultravisor:
 				{
 					URL: _CLIUltravisorURL,
-					BeaconName: _CLIBeaconName
+					BeaconName: _CLIBeaconName,
+					UserName: _CLIUserName,
+					Password: _CLIPassword
 				}
 		});
 
