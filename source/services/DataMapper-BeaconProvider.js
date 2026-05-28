@@ -609,10 +609,34 @@ class DataMapperBeaconProvider extends libFableServiceProviderBase
 															{
 																try { tmpRespBody = JSON.parse(tmpRespBody); } catch (e) { /* ignore */ }
 															}
-															let tmpFirstErrors = (tmpRespBody && Array.isArray(tmpRespBody.Errors))
-																? tmpRespBody.Errors.slice(0, 3).map((pE) => (pE && (pE.Error || pE.Message || JSON.stringify(pE).slice(0, 200))))
-																: [];
-															tmpErrorLog.push({ Offset: tmpOffset, Errored: tmpHdrErrored, Of: tmpBatchPulled, Details: tmpFirstErrors });
+															// Preserve up to 25 per-row errors per batch with
+															// full { Record, Operation, Error } context — the
+															// launcher de-dups by Error text. Truncate Record
+															// JSON to ~400 chars so a batch worth of rows stays
+															// in a manageable response payload.
+															let tmpBatchErrors = [];
+															if (tmpRespBody && Array.isArray(tmpRespBody.Errors))
+															{
+																let tmpSlice = tmpRespBody.Errors.slice(0, 25);
+																for (let i = 0; i < tmpSlice.length; i++)
+																{
+																	let tmpRow = tmpSlice[i] || {};
+																	let tmpRecordJSON;
+																	try { tmpRecordJSON = JSON.stringify(tmpRow.Record); }
+																	catch (eR) { tmpRecordJSON = String(tmpRow.Record); }
+																	if (typeof tmpRecordJSON === 'string' && tmpRecordJSON.length > 400)
+																	{
+																		tmpRecordJSON = tmpRecordJSON.slice(0, 400) + '...';
+																	}
+																	tmpBatchErrors.push(
+																		{
+																			Record:    tmpRecordJSON,
+																			Operation: tmpRow.Operation || 'Unknown',
+																			Error:     tmpRow.Error || tmpRow.Message || ''
+																		});
+																}
+															}
+															tmpErrorLog.push({ Offset: tmpOffset, Errored: tmpHdrErrored, Of: tmpBatchPulled, Details: tmpBatchErrors });
 														}
 													}
 													else
