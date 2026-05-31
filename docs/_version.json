@@ -1,7 +1,7 @@
 {
 	"Name": "retold-data-mapper",
-	"Version": "1.0.2",
+	"Version": "1.0.8",
 	"Description": "Standalone service for cross-beacon schema mapping — runs its own Orator + Pict web UI on its own port, dispatches mesh operations via fable-ultravisor-client, registers DataMapper capabilities on any Ultravisor as a beacon.",
-	"GeneratedAt": "2026-05-26T21:14:59.080Z",
-	"GitCommit": "3338946"
+	"GeneratedAt": "2026-05-31T07:08:42.939Z",
+	"GitCommit": "f0b8578"
 }
