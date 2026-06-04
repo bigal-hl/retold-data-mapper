@@ -29,6 +29,9 @@ const libMeadowIntegrationAdapter = require('meadow-integration/source/Meadow-Se
 const libMeadowCloneRestClient    = require('meadow-integration/source/services/clone/Meadow-Service-RestClient.js');
 const libMeadowGUIDMap            = require('meadow-integration/source/Meadow-Service-Integration-GUIDMap.js');
 
+// Node crypto for the raw-archive RecordMD5 (WriteRecordsRaw clone-to-lake).
+const libCrypto                   = require('crypto');
+
 // In-memory row-count guard. The four typed transforms hold their
 // input set fully in memory (the architecture supports swapping in a
 // SQL-pushdown compute later, but for now: bounded). Configurable via
@@ -1214,6 +1217,150 @@ class DataMapperBeaconProvider extends libFableServiceProviderBase
 						}
 					},
 
+					'WriteRecordsRaw':
+					{
+						Description: 'Clone a comprehension to a target beacon entity as raw-archive rows { Identity, RawJSON, RecordMD5, IngestedAt, SourceTable } via per-record POST. Preserves each source record verbatim — use for clone-to-lake passes where the source has no reliable unique identifier (Identity falls back to the comprehension key, e.g. record-N).',
+						SettingsSchema:
+						[
+							{ Name: 'TargetBeaconName', DataType: 'String', Required: true,  Description: 'Beacon name of the target lake (UV mesh AffinityKey).' },
+							{ Name: 'ConnectionHash',   DataType: 'String', Required: true,  Description: 'URL slug of the target connection (meadow REST at /1.0/<ConnectionHash>/).' },
+							{ Name: 'Entity',           DataType: 'String', Required: true,  Description: 'Target raw-archive entity name (e.g. RAW_Sale).' },
+							{ Name: 'Comprehension',    DataType: 'Object', Required: true,  Description: 'Comprehension { <Entity>: { <key>: <record>, ... } } — flows from the BuildComprehension node. Each record is wrapped into a raw-archive row.' },
+							{ Name: 'IdentityField',    DataType: 'String', Required: false, Description: 'Field on each source record to preserve as the Identity column. If absent or missing on the record, falls back to the comprehension key — so source rows need no unique id.' },
+							{ Name: 'SourceTable',      DataType: 'String', Required: false, Description: 'Original source table name; stored verbatim in the SourceTable column for round-trip identification.' }
+						],
+						Handler: function (pWorkItem, pContext, fHandlerCallback, fReportProgress)
+						{
+							let tmpStartMs = Date.now();
+							let tmpSettings = pWorkItem.Settings || {};
+							let tmpBeaconName = tmpSettings.TargetBeaconName;
+							let tmpConnHash   = tmpSettings.ConnectionHash;
+							let tmpEntity     = tmpSettings.Entity;
+							let tmpSourceTable = tmpSettings.SourceTable || '';
+							let tmpIdentityField = tmpSettings.IdentityField || '';
+
+							let tmpComprehension = tmpSettings.Comprehension;
+							if (typeof (tmpComprehension) === 'string') { try { tmpComprehension = JSON.parse(tmpComprehension); } catch (e) { tmpComprehension = null; } }
+
+							if (!tmpSelf._Client || !tmpComprehension || typeof (tmpComprehension) !== 'object' || !tmpBeaconName || !tmpConnHash || !tmpEntity)
+							{
+								return fHandlerCallback(null, {
+									Outputs: { Written: 0, Errors: 0, ErrorLog: [] },
+									Log: ['WriteRecordsRaw: TargetBeaconName, ConnectionHash, Entity, and a Comprehension are required, and an UltravisorClient must be configured.']
+								});
+							}
+
+							// Find the entity sub-object. First object value wins so
+							// the raw write tolerates the comprehension key not
+							// matching the destination table name.
+							let tmpEntityData = tmpComprehension[tmpEntity];
+							if (!tmpEntityData || typeof (tmpEntityData) !== 'object')
+							{
+								let tmpCKeys = Object.keys(tmpComprehension);
+								for (let i = 0; i < tmpCKeys.length; i++)
+								{
+									if (tmpComprehension[tmpCKeys[i]] && typeof (tmpComprehension[tmpCKeys[i]]) === 'object')
+									{
+										tmpEntityData = tmpComprehension[tmpCKeys[i]];
+										break;
+									}
+								}
+							}
+
+							let tmpRowKeys = (tmpEntityData && typeof (tmpEntityData) === 'object') ? Object.keys(tmpEntityData) : [];
+							if (tmpRowKeys.length === 0)
+							{
+								return fHandlerCallback(null, {
+									Outputs: { Written: 0, Errors: 0, ErrorLog: [] },
+									Log: [`WriteRecordsRaw: no records in comprehension for entity [${tmpEntity}].`]
+								});
+							}
+
+							let tmpIngestedAt = new Date().toISOString();
+							let tmpWritten = 0;
+							let tmpErrors  = 0;
+							let tmpErrorLog = [];
+							let tmpIndex = 0;
+
+							let fWriteNext = () =>
+							{
+								if (tmpIndex >= tmpRowKeys.length)
+								{
+									let tmpElapsedMs = Date.now() - tmpStartMs;
+									return fHandlerCallback(null, {
+										Outputs: { Written: tmpWritten, Errors: tmpErrors, ErrorLog: tmpErrorLog, ElapsedMs: tmpElapsedMs },
+										Log: [`WriteRecordsRaw (→ ${tmpBeaconName}/${tmpConnHash}/${tmpEntity}): ${tmpWritten} raw rows written, ${tmpErrors} errors out of ${tmpRowKeys.length} (sourceTable [${tmpSourceTable}]) in ${tmpElapsedMs}ms.`]
+									});
+								}
+
+								let tmpKey = tmpRowKeys[tmpIndex];
+								let tmpSourceRecord = tmpEntityData[tmpKey];
+								tmpIndex++;
+
+								let tmpIdentity = null;
+								if (tmpIdentityField && tmpSourceRecord && Object.prototype.hasOwnProperty.call(tmpSourceRecord, tmpIdentityField))
+								{
+									tmpIdentity = tmpSourceRecord[tmpIdentityField];
+								}
+								if (tmpIdentity === null || typeof (tmpIdentity) === 'undefined')
+								{
+									tmpIdentity = tmpKey;
+								}
+
+								let tmpRawJSON = JSON.stringify(tmpSourceRecord);
+								let tmpRawRecord =
+								{
+									Identity:    tmpIdentity,
+									RawJSON:     tmpRawJSON,
+									RecordMD5:   libCrypto.createHash('md5').update(tmpRawJSON).digest('hex'),
+									IngestedAt:  tmpIngestedAt,
+									SourceTable: tmpSourceTable
+								};
+
+								tmpSelf._dispatch(
+									{
+										Capability: 'MeadowProxy',
+										Action:     'Request',
+										Settings:
+										{
+											Method:     'POST',
+											Path:       `/1.0/${tmpConnHash}/${tmpEntity}`,
+											Body:       JSON.stringify(tmpRawRecord),
+											RemoteUser: ''
+										},
+										AffinityKey: tmpBeaconName,
+										TimeoutMs:   30000
+									},
+									(pErr, pResult) =>
+									{
+										if (pErr)
+										{
+											tmpErrors++;
+											tmpErrorLog.push({ Index: tmpIndex - 1, Error: pErr.message || String(pErr) });
+										}
+										else
+										{
+											let tmpOut = (pResult && pResult.Outputs) || pResult || {};
+											let tmpStatus = tmpOut.Status;
+											if (typeof (tmpStatus) === 'number' && tmpStatus >= 400)
+											{
+												tmpErrors++;
+												tmpErrorLog.push({ Index: tmpIndex - 1, Error: `HTTP ${tmpStatus}` });
+											}
+											else { tmpWritten++; }
+										}
+										if (typeof fReportProgress === 'function')
+										{
+											try { fReportProgress({ Phase: 'writing-raw', Entity: tmpEntity, Written: tmpWritten, Errors: tmpErrors }); }
+											catch (pProgIgn) { /* best-effort */ }
+										}
+										fWriteNext();
+									});
+							};
+
+							fWriteNext();
+						}
+					},
 					'WriteRecords':
 					{
 						Description: 'Push a comprehension to a target beacon entity using meadow-endpoints bulk Upserts (PUT /<Entity>s/Upserts), routed through the UV mesh by AffinityKey=TargetBeaconName.',
@@ -2487,7 +2634,7 @@ class DataMapperBeaconProvider extends libFableServiceProviderBase
 				}
 			});
 
-		this.log.info('DataMapperBeaconProvider: registered 3 capabilities (DataMapperSource, DataMapperRecords, DataMapperTransform) with 9 actions.');
+		this.log.info('DataMapperBeaconProvider: registered 3 capabilities (DataMapperSource, DataMapperRecords, DataMapperTransform) with 10 actions.');
 	}
 }
 
