@@ -211,6 +211,61 @@ suite
 	function ()
 	{
 		// ============================================================
+		// Sort filter (FSF) builder — single + composite SortField
+		// ============================================================
+		suite
+		(
+			'_buildSortFilter',
+			function ()
+			{
+				const _buildSortFilter = require('../source/services/DataMapper-BeaconProvider.js')._buildSortFilter;
+
+				test
+				(
+					'single column gives one FSF stanza (backward-compatible)',
+					function ()
+					{
+						libAssert.strictEqual(_buildSortFilter('IDBook'), 'FSF~IDBook~ASC~0');
+					}
+				);
+				test
+				(
+					'composite PK gives one stanza per column (total order)',
+					function ()
+					{
+						libAssert.strictEqual(_buildSortFilter('MISCHGUT_NR,TRIAL_NR'), 'FSF~MISCHGUT_NR~ASC~0~FSF~TRIAL_NR~ASC~0');
+					}
+				);
+				test
+				(
+					'trims whitespace around column names',
+					function ()
+					{
+						libAssert.strictEqual(_buildSortFilter('A, B , C'), 'FSF~A~ASC~0~FSF~B~ASC~0~FSF~C~ASC~0');
+					}
+				);
+				test
+				(
+					'drops empty segments from trailing or doubled commas',
+					function ()
+					{
+						libAssert.strictEqual(_buildSortFilter('A,,B,'), 'FSF~A~ASC~0~FSF~B~ASC~0');
+					}
+				);
+				test
+				(
+					'falsy SortField yields empty string',
+					function ()
+					{
+						libAssert.strictEqual(_buildSortFilter(''), '');
+						libAssert.strictEqual(_buildSortFilter(undefined), '');
+						libAssert.strictEqual(_buildSortFilter(null), '');
+					}
+				);
+			}
+		);
+
+		// ============================================================
 		// Validator
 		// ============================================================
 		suite

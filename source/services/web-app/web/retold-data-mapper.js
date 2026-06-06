@@ -1,4 +1,4 @@
-"use strict";(function(f){if(typeof exports==="object"&&typeof module!=="undefined"){module.exports=f();}else if(typeof define==="function"&&define.amd){define([],f);}else{var g;if(typeof window!=="undefined"){g=window;}else if(typeof global!=="undefined"){g=global;}else if(typeof self!=="undefined"){g=self;}else{g=this;}g.retoldDataMapper=f();}})(function(){var define,module,exports;return function(){function r(e,n,t){function o(i,f){if(!n[i]){if(!e[i]){var c="function"==typeof require&&require;if(!f&&c)return c(i,!0);if(u)return u(i,!0);var a=new Error("Cannot find module '"+i+"'");throw a.code="MODULE_NOT_FOUND",a;}var p=n[i]={exports:{}};e[i][0].call(p.exports,function(r){var n=e[i][1][r];return o(n||r);},p,p.exports,r,e,n,t);}return n[i].exports;}for(var u="function"==typeof require&&require,i=0;i<t.length;i++)o(t[i]);return o;}return r;}()({1:[function(require,module,exports){module.exports={"name":"fable-serviceproviderbase","version":"3.0.19","description":"Simple base classes for fable services.","main":"source/Fable-ServiceProviderBase.js","scripts":{"start":"node source/Fable-ServiceProviderBase.js","test":"npx quack test","tests":"npx quack test -g","coverage":"npx quack coverage","build":"npx quack build","types":"tsc -p ./tsconfig.build.json","check":"tsc -p . --noEmit"},"types":"types/source/Fable-ServiceProviderBase.d.ts","mocha":{"diff":true,"extension":["js"],"package":"./package.json","reporter":"spec","slow":"75","timeout":"5000","ui":"tdd","watch-files":["source/**/*.js","test/**/*.js"],"watch-ignore":["lib/vendor"]},"repository":{"type":"git","url":"https://github.com/fable-retold/fable-serviceproviderbase.git"},"keywords":["entity","behavior"],"author":"Steven Velozo <steven@velozo.com> (http://velozo.com/)","license":"MIT","bugs":{"url":"https://github.com/fable-retold/fable-serviceproviderbase/issues"},"homepage":"https://github.com/fable-retold/fable-serviceproviderbase","devDependencies":{"@types/mocha":"^10.0.10","fable":"^3.1.62","quackage":"^1.0.58","typescript":"^5.9.3"}};},{}],2:[function(require,module,exports){/**
+"use strict";(function(f){if(typeof exports==="object"&&typeof module!=="undefined"){module.exports=f();}else if(typeof define==="function"&&define.amd){define([],f);}else{var g;if(typeof window!=="undefined"){g=window;}else if(typeof global!=="undefined"){g=global;}else if(typeof self!=="undefined"){g=self;}else{g=this;}g.retoldDataMapper=f();}})(function(){var define,module,exports;return function(){function r(e,n,t){function o(i,f){if(!n[i]){if(!e[i]){var c="function"==typeof require&&require;if(!f&&c)return c(i,!0);if(u)return u(i,!0);var a=new Error("Cannot find module '"+i+"'");throw a.code="MODULE_NOT_FOUND",a;}var p=n[i]={exports:{}};e[i][0].call(p.exports,function(r){var n=e[i][1][r];return o(n||r);},p,p.exports,r,e,n,t);}return n[i].exports;}for(var u="function"==typeof require&&require,i=0;i<t.length;i++)o(t[i]);return o;}return r;}()({1:[function(require,module,exports){module.exports={"name":"fable-serviceproviderbase","version":"3.0.19","description":"Simple base classes for fable services.","main":"source/Fable-ServiceProviderBase.js","scripts":{"start":"node source/Fable-ServiceProviderBase.js","test":"npx quack test","tests":"npx quack test -g","coverage":"npx quack coverage","build":"npx quack build","types":"tsc -p ./tsconfig.build.json","check":"tsc -p . --noEmit"},"types":"types/source/Fable-ServiceProviderBase.d.ts","mocha":{"diff":true,"extension":["js"],"package":"./package.json","reporter":"spec","slow":"75","timeout":"5000","ui":"tdd","watch-files":["source/**/*.js","test/**/*.js"],"watch-ignore":["lib/vendor"]},"repository":{"type":"git","url":"https://github.com/stevenvelozo/fable-serviceproviderbase.git"},"keywords":["entity","behavior"],"author":"Steven Velozo <steven@velozo.com> (http://velozo.com/)","license":"MIT","bugs":{"url":"https://github.com/stevenvelozo/fable-serviceproviderbase/issues"},"homepage":"https://github.com/stevenvelozo/fable-serviceproviderbase","devDependencies":{"@types/mocha":"^10.0.10","fable":"^3.1.62","quackage":"^1.0.58","typescript":"^5.9.3"}};},{}],2:[function(require,module,exports){/**
 * Fable Service Base
 * @author <steven@velozo.com>
 */const libPackage=require('../package.json');class FableServiceProviderBase{/**
@@ -19,7 +19,7 @@ this.serviceType=`Unknown-${this.UUID}`;// The service hash is used to identify 
 this.Hash=typeof pServiceHash==='string'?pServiceHash:!this.fable&&typeof pOptions==='string'?pOptions:`${this.UUID}`;}/**
 	 * @param {import('fable')} pFable
 	 */connectFable(pFable){if(typeof pFable!=='object'||!pFable.isFable){let tmpErrorMessage=`Fable Service Provider Base: Cannot connect to Fable, invalid Fable object passed in.  The pFable parameter was a [${typeof pFable}].}`;console.log(tmpErrorMessage);return new Error(tmpErrorMessage);}if(!this.fable){this.fable=pFable;}if(!this.log){this.log=this.fable.Logging;}if(!this.services){this.services=this.fable.services;}if(!this.servicesMap){this.servicesMap=this.fable.servicesMap;}return true;}static isFableService=true;}module.exports=FableServiceProviderBase;// This is left here in case we want to go back to having different code/base class for "core" services
-module.exports.CoreServiceProviderBase=FableServiceProviderBase;},{"../package.json":1}],3:[function(require,module,exports){module.exports={"name":"pict-application","version":"1.0.34","description":"Application base class for a pict view-based application","main":"source/Pict-Application.js","scripts":{"test":"npx quack test","start":"node source/Pict-Application.js","coverage":"npx quack coverage","build":"npx quack build","docker-dev-build":"docker build ./ -f Dockerfile_LUXURYCode -t pict-application-image:local","docker-dev-run":"docker run -it -d --name pict-application-dev -p 30001:8080 -p 38086:8086 -v \"$PWD/.config:/home/coder/.config\"  -v \"$PWD:/home/coder/pict-application\" -u \"$(id -u):$(id -g)\" -e \"DOCKER_USER=$USER\" pict-application-image:local","docker-dev-shell":"docker exec -it pict-application-dev /bin/bash","tests":"npx quack test -g","lint":"eslint source/**","types":"tsc -p ."},"types":"types/source/Pict-Application.d.ts","repository":{"type":"git","url":"git+https://github.com/fable-retold/pict-application.git"},"author":"steven velozo <steven@velozo.com>","license":"MIT","bugs":{"url":"https://github.com/fable-retold/pict-application/issues"},"homepage":"https://github.com/fable-retold/pict-application#readme","devDependencies":{"@eslint/js":"^9.28.0","browser-env":"^3.3.0","eslint":"^9.28.0","pict":"^1.0.348","pict-docuserve":"^0.1.5","pict-provider":"^1.0.10","pict-view":"^1.0.66","quackage":"^1.1.0","typescript":"^5.9.3"},"mocha":{"diff":true,"extension":["js"],"package":"./package.json","reporter":"spec","slow":"75","timeout":"5000","ui":"tdd","watch-files":["source/**/*.js","test/**/*.js"],"watch-ignore":["lib/vendor"]},"dependencies":{"fable-serviceproviderbase":"^3.0.19"}};},{}],4:[function(require,module,exports){const libFableServiceBase=require('fable-serviceproviderbase');const libPackage=require('../package.json');const defaultPictSettings={Name:'DefaultPictApplication',// The main "viewport" is the view that is used to host our application
+module.exports.CoreServiceProviderBase=FableServiceProviderBase;},{"../package.json":1}],3:[function(require,module,exports){module.exports={"name":"pict-application","version":"1.0.34","description":"Application base class for a pict view-based application","main":"source/Pict-Application.js","scripts":{"test":"npx quack test","start":"node source/Pict-Application.js","coverage":"npx quack coverage","build":"npx quack build","docker-dev-build":"docker build ./ -f Dockerfile_LUXURYCode -t pict-application-image:local","docker-dev-run":"docker run -it -d --name pict-application-dev -p 30001:8080 -p 38086:8086 -v \"$PWD/.config:/home/coder/.config\"  -v \"$PWD:/home/coder/pict-application\" -u \"$(id -u):$(id -g)\" -e \"DOCKER_USER=$USER\" pict-application-image:local","docker-dev-shell":"docker exec -it pict-application-dev /bin/bash","tests":"npx quack test -g","lint":"eslint source/**","types":"tsc -p ."},"types":"types/source/Pict-Application.d.ts","repository":{"type":"git","url":"git+https://github.com/stevenvelozo/pict-application.git"},"author":"steven velozo <steven@velozo.com>","license":"MIT","bugs":{"url":"https://github.com/stevenvelozo/pict-application/issues"},"homepage":"https://github.com/stevenvelozo/pict-application#readme","devDependencies":{"@eslint/js":"^9.28.0","browser-env":"^3.3.0","eslint":"^9.28.0","pict":"^1.0.348","pict-docuserve":"^0.1.5","pict-provider":"^1.0.10","pict-view":"^1.0.66","quackage":"^1.1.0","typescript":"^5.9.3"},"mocha":{"diff":true,"extension":["js"],"package":"./package.json","reporter":"spec","slow":"75","timeout":"5000","ui":"tdd","watch-files":["source/**/*.js","test/**/*.js"],"watch-ignore":["lib/vendor"]},"dependencies":{"fable-serviceproviderbase":"^3.0.19"}};},{}],4:[function(require,module,exports){const libFableServiceBase=require('fable-serviceproviderbase');const libPackage=require('../package.json');const defaultPictSettings={Name:'DefaultPictApplication',// The main "viewport" is the view that is used to host our application
 MainViewportViewIdentifier:'Default-View',MainViewportRenderableHash:false,MainViewportDestinationAddress:false,MainViewportDefaultDataAddress:false,// Whether or not we should automatically render the main viewport and other autorender views after we initialize the pict application
 AutoSolveAfterInitialize:true,AutoRenderMainViewportViewAfterInitialize:true,AutoRenderViewsAfterInitialize:false,AutoLoginAfterInitialize:false,AutoLoadDataAfterLogin:false,ConfigurationOnlyViews:[],Manifests:{},// The prefix to prepend on all template destination hashes
 IdentifierAddressPrefix:'PICT-'};/**
@@ -1952,6 +1952,18 @@ if(typeof pOptions.onOpen==='function'){pOptions.onOpen(pDialog);}}/**
 	min-height: 0;
 	overflow: auto;
 }
+/* Fixed-mode panels are pure chrome (topbars, status rows). Their
+   content should fit the configured Size exactly — never scroll. The
+   1px border that .pict-modal-shell-panel-mode-fixed adds on the
+   inner edge shaves 1px off the content's available height, which
+   then triggers a sliver-scrollbar on any inner widget with
+   min-height matching the panel Size. overflow:hidden here suppresses
+   that without affecting resizable/collapsible panels (sidebars,
+   drawers) where scrollable content is the whole point. */
+.pict-modal-shell-panel-mode-fixed > .pict-modal-shell-panel-content
+{
+	overflow: hidden;
+}
 .pict-modal-shell-panel-content-inner
 {
 	min-height: 100%;
@@ -2041,105 +2053,94 @@ if(typeof pOptions.onOpen==='function'){pOptions.onOpen(pDialog);}}/**
 }
 /* Drop shadow casts AWAY from the panel so the tab feels pulled out
    (extension of the panel) rather than floating across the boundary.
-   The first shadow value is the merge-bar (panel-bg colored, offset
-   INTO the panel) which has to be repeated here so the hover override
-   doesn't drop it. */
+   The tab itself is now positioned fully OUTSIDE the panel boundary
+   (see the per-side rules below), so we don't need a merge-bar shadow
+   to mask any in-panel overlap — only the drop shadow remains. */
 .pict-modal-shell-panel-left:hover    > .pict-modal-shell-panel-collapse-tab,
 .pict-modal-shell-panel-left    > .pict-modal-shell-panel-collapse-tab:hover
 {
-	box-shadow:
-		calc(-1 * var(--pict-modal-collapse-tab-merge)) 0 0 0 var(--pict-modal-bg, var(--theme-color-background-panel, #ffffff)),
-		3px 0 6px -2px rgba(0, 0, 0, 0.18);
+	box-shadow: 3px 0 6px -2px rgba(0, 0, 0, 0.18);
 }
 .pict-modal-shell-panel-right:hover   > .pict-modal-shell-panel-collapse-tab,
 .pict-modal-shell-panel-right   > .pict-modal-shell-panel-collapse-tab:hover
 {
-	box-shadow:
-		var(--pict-modal-collapse-tab-merge) 0 0 0 var(--pict-modal-bg, var(--theme-color-background-panel, #ffffff)),
-		-3px 0 6px -2px rgba(0, 0, 0, 0.18);
+	box-shadow: -3px 0 6px -2px rgba(0, 0, 0, 0.18);
 }
 .pict-modal-shell-panel-top:hover     > .pict-modal-shell-panel-collapse-tab,
 .pict-modal-shell-panel-top     > .pict-modal-shell-panel-collapse-tab:hover
 {
-	box-shadow:
-		0 calc(-1 * var(--pict-modal-collapse-tab-merge)) 0 0 var(--pict-modal-bg, var(--theme-color-background-panel, #ffffff)),
-		0 3px 6px -2px rgba(0, 0, 0, 0.18);
+	box-shadow: 0 3px 6px -2px rgba(0, 0, 0, 0.18);
 }
 .pict-modal-shell-panel-bottom:hover  > .pict-modal-shell-panel-collapse-tab,
 .pict-modal-shell-panel-bottom  > .pict-modal-shell-panel-collapse-tab:hover
 {
-	box-shadow:
-		0 var(--pict-modal-collapse-tab-merge) 0 0 var(--pict-modal-bg, var(--theme-color-background-panel, #ffffff)),
-		0 -3px 6px -2px rgba(0, 0, 0, 0.18);
+	box-shadow: 0 -3px 6px -2px rgba(0, 0, 0, 0.18);
 }
 
-/* Side panels: slim VERTICAL sliver pulled OUT of the panel's outer
-   boundary like a drawer tab. The geometric inner edge sits 1px
-   INSIDE the panel boundary, and the merge-bar box-shadow paints
-   another --pict-modal-collapse-tab-merge px of panel-bg color past
-   it INTO the panel — together they mask any 1px theme border on an
-   inner element, content padding offset, or resize-handle hover bleed
-   that would otherwise leak between the tab and the panel content.
-   The tab grows OUTWARD only on hover; the inner edge stays put so
-   the tab always looks like an extension of the panel rather than a
-   floating button. Border-left is removed for left panels (and
-   border-right for right panels) so the panel-facing edge is open. */
+/* Per-side base positioning — the tab lives entirely OUTSIDE the
+   panel's outer boundary.  Its panel-facing edge touches the boundary
+   (offset = -tabThickness) and the rest of the tab pokes out into the
+   adjacent area (center / sibling panel).  Border on the panel-facing
+   edge is dropped so the tab looks attached to the panel rather than
+   floating beside it.
+   Why fully-outside?  Earlier iterations had the tab straddling the
+   boundary (1px inside + 4px outside) with a panel-bg-colored merge-bar
+   masking the in-panel half — that worked geometrically but visually
+   read as "tab pinned into the panel," and any rendering inside the
+   panel (especially custom borders or hover bleeds) could clip against
+   the in-panel half.  Fully-external positioning eliminates the overlap
+   class of bugs and lets the tab live entirely in the adjacent area
+   where there's no app content to step on. */
 .pict-modal-shell-panel-left  > .pict-modal-shell-panel-collapse-tab
 {
-	right: -5px; top: 14px; width: 6px; height: 28px;
+	right: -6px; top: 14px; width: 6px; height: 28px;
 	border-radius: 0 4px 4px 0;
 	border-left: 0;
-	box-shadow: calc(-1 * var(--pict-modal-collapse-tab-merge)) 0 0 0 var(--pict-modal-bg, var(--theme-color-background-panel, #ffffff));
 }
 .pict-modal-shell-panel-right > .pict-modal-shell-panel-collapse-tab
 {
-	left:  -5px; top: 14px; width: 6px; height: 28px;
+	left:  -6px; top: 14px; width: 6px; height: 28px;
 	border-radius: 4px 0 0 4px;
 	border-right: 0;
-	box-shadow: var(--pict-modal-collapse-tab-merge) 0 0 0 var(--pict-modal-bg, var(--theme-color-background-panel, #ffffff));
 }
-/* Hover: same inner anchor (panelRight - 1), tab grows outward to
-   width 18 → right: -17px. Top + height grow downward only (top
-   stays, height extends so the tab visually 'drops' the chevron
-   into view). */
+.pict-modal-shell-panel-top    > .pict-modal-shell-panel-collapse-tab
+{
+	bottom: -6px; right: 14px; width: 28px; height: 6px;
+	border-radius: 0 0 4px 4px;
+	border-top: 0;
+}
+.pict-modal-shell-panel-bottom > .pict-modal-shell-panel-collapse-tab
+{
+	top:    -6px; right: 14px; width: 28px; height: 6px;
+	border-radius: 4px 4px 0 0;
+	border-bottom: 0;
+}
+
+/* Hover: tab grows OUTWARD into the adjacent area.  The panel-facing
+   edge stays glued to the boundary (offset = -tabThickness), so the
+   tab still looks attached on hover — only its outer dimension grows.
+   For side panels the height also grows (28 → 36) downward; for top
+   /bottom panels the width grows (28 → 36) — see the next block for
+   the perpendicular-axis offsets. */
 .pict-modal-shell-panel-left:hover  > .pict-modal-shell-panel-collapse-tab,
 .pict-modal-shell-panel-left  > .pict-modal-shell-panel-collapse-tab:hover
 {
-	width: 18px; height: 36px; right: -17px;
+	width: 18px; height: 36px; right: -18px;
 }
 .pict-modal-shell-panel-right:hover > .pict-modal-shell-panel-collapse-tab,
 .pict-modal-shell-panel-right > .pict-modal-shell-panel-collapse-tab:hover
 {
-	width: 18px; height: 36px; left: -17px;
-}
-
-/* Top / bottom panels: slim HORIZONTAL sliver pulled OUT of the
-   horizontal boundary, anchored 14 px in from the right. Same
-   inner-edge-anchored + merge-bar pattern as the side panels — the
-   merge-bar offsets vertically instead of horizontally. */
-.pict-modal-shell-panel-top    > .pict-modal-shell-panel-collapse-tab
-{
-	bottom: -5px; right: 14px; width: 28px; height: 6px;
-	border-radius: 0 0 4px 4px;
-	border-top: 0;
-	box-shadow: 0 calc(-1 * var(--pict-modal-collapse-tab-merge)) 0 0 var(--pict-modal-bg, var(--theme-color-background-panel, #ffffff));
-}
-.pict-modal-shell-panel-bottom > .pict-modal-shell-panel-collapse-tab
-{
-	top:    -5px; right: 14px; width: 28px; height: 6px;
-	border-radius: 4px 4px 0 0;
-	border-bottom: 0;
-	box-shadow: 0 var(--pict-modal-collapse-tab-merge) 0 0 var(--pict-modal-bg, var(--theme-color-background-panel, #ffffff));
+	width: 18px; height: 36px; left: -18px;
 }
 .pict-modal-shell-panel-top:hover    > .pict-modal-shell-panel-collapse-tab,
 .pict-modal-shell-panel-top    > .pict-modal-shell-panel-collapse-tab:hover
 {
-	width: 36px; height: 18px; bottom: -17px;
+	width: 36px; height: 18px; bottom: -18px;
 }
 .pict-modal-shell-panel-bottom:hover > .pict-modal-shell-panel-collapse-tab,
 .pict-modal-shell-panel-bottom > .pict-modal-shell-panel-collapse-tab:hover
 {
-	width: 36px; height: 18px; top: -17px;
+	width: 36px; height: 18px; top: -18px;
 }
 
 .pict-modal-shell-panel-collapse-tab-title { display: none; white-space: nowrap; }
@@ -2606,7 +2607,7 @@ if(typeof document!=='undefined'&&document.body){if(!document.body.classList.con
 	 * Clean up all DOM elements when the view is destroyed.
 	 *//**
 	 * Destroy all active panels.
-	 */destroyPanels(){this._panel.destroyAll();}destroy(){this.dismissAll();this.destroyPanels();this._overlay.destroy();this._toast.destroy();if(typeof super.destroy==='function'){return super.destroy();}}}module.exports=PictSectionModal;module.exports.default_configuration=_DefaultConfiguration;},{"./Pict-Modal-Confirm.js":7,"./Pict-Modal-Dropdown.js":8,"./Pict-Modal-Overlay.js":9,"./Pict-Modal-Panel.js":10,"./Pict-Modal-Shell.js":11,"./Pict-Modal-Toast.js":12,"./Pict-Modal-Tooltip.js":13,"./Pict-Modal-Window.js":14,"./Pict-Section-Modal-DefaultConfiguration.js":15,"pict-view":18}],17:[function(require,module,exports){module.exports={"name":"pict-view","version":"1.0.68","description":"Pict View Base Class","main":"source/Pict-View.js","scripts":{"test":"npx quack test","tests":"npx quack test -g","start":"node source/Pict-View.js","coverage":"npx quack coverage","build":"npx quack build","docker-dev-build":"docker build ./ -f Dockerfile_LUXURYCode -t pict-view-image:local","docker-dev-run":"docker run -it -d --name pict-view-dev -p 30001:8080 -p 38086:8086 -v \"$PWD/.config:/home/coder/.config\"  -v \"$PWD:/home/coder/pict-view\" -u \"$(id -u):$(id -g)\" -e \"DOCKER_USER=$USER\" pict-view-image:local","docker-dev-shell":"docker exec -it pict-view-dev /bin/bash","types":"tsc -p .","lint":"eslint source/**"},"types":"types/source/Pict-View.d.ts","repository":{"type":"git","url":"git+https://github.com/fable-retold/pict-view.git"},"author":"steven velozo <steven@velozo.com>","license":"MIT","bugs":{"url":"https://github.com/fable-retold/pict-view/issues"},"homepage":"https://github.com/fable-retold/pict-view#readme","devDependencies":{"@eslint/js":"^9.39.1","browser-env":"^3.3.0","eslint":"^9.39.1","pict":"^1.0.363","quackage":"^1.0.65","typescript":"^5.9.3"},"mocha":{"diff":true,"extension":["js"],"package":"./package.json","reporter":"spec","slow":"75","timeout":"5000","ui":"tdd","watch-files":["source/**/*.js","test/**/*.js"],"watch-ignore":["lib/vendor"]},"dependencies":{"fable":"^3.1.67","fable-serviceproviderbase":"^3.0.19"}};},{}],18:[function(require,module,exports){const libFableServiceBase=require('fable-serviceproviderbase');const libPackage=require('../package.json');const defaultPictViewSettings={DefaultRenderable:false,DefaultDestinationAddress:false,DefaultTemplateRecordAddress:false,ViewIdentifier:false,// If this is set to true, when the App initializes this will.
+	 */destroyPanels(){this._panel.destroyAll();}destroy(){this.dismissAll();this.destroyPanels();this._overlay.destroy();this._toast.destroy();if(typeof super.destroy==='function'){return super.destroy();}}}module.exports=PictSectionModal;module.exports.default_configuration=_DefaultConfiguration;},{"./Pict-Modal-Confirm.js":7,"./Pict-Modal-Dropdown.js":8,"./Pict-Modal-Overlay.js":9,"./Pict-Modal-Panel.js":10,"./Pict-Modal-Shell.js":11,"./Pict-Modal-Toast.js":12,"./Pict-Modal-Tooltip.js":13,"./Pict-Modal-Window.js":14,"./Pict-Section-Modal-DefaultConfiguration.js":15,"pict-view":18}],17:[function(require,module,exports){module.exports={"name":"pict-view","version":"1.0.68","description":"Pict View Base Class","main":"source/Pict-View.js","scripts":{"test":"npx quack test","tests":"npx quack test -g","start":"node source/Pict-View.js","coverage":"npx quack coverage","build":"npx quack build","docker-dev-build":"docker build ./ -f Dockerfile_LUXURYCode -t pict-view-image:local","docker-dev-run":"docker run -it -d --name pict-view-dev -p 30001:8080 -p 38086:8086 -v \"$PWD/.config:/home/coder/.config\"  -v \"$PWD:/home/coder/pict-view\" -u \"$(id -u):$(id -g)\" -e \"DOCKER_USER=$USER\" pict-view-image:local","docker-dev-shell":"docker exec -it pict-view-dev /bin/bash","types":"tsc -p .","lint":"eslint source/**"},"types":"types/source/Pict-View.d.ts","repository":{"type":"git","url":"git+https://github.com/stevenvelozo/pict-view.git"},"author":"steven velozo <steven@velozo.com>","license":"MIT","bugs":{"url":"https://github.com/stevenvelozo/pict-view/issues"},"homepage":"https://github.com/stevenvelozo/pict-view#readme","devDependencies":{"@eslint/js":"^9.39.1","browser-env":"^3.3.0","eslint":"^9.39.1","pict":"^1.0.363","quackage":"^1.0.65","typescript":"^5.9.3"},"mocha":{"diff":true,"extension":["js"],"package":"./package.json","reporter":"spec","slow":"75","timeout":"5000","ui":"tdd","watch-files":["source/**/*.js","test/**/*.js"],"watch-ignore":["lib/vendor"]},"dependencies":{"fable":"^3.1.67","fable-serviceproviderbase":"^3.0.19"}};},{}],18:[function(require,module,exports){const libFableServiceBase=require('fable-serviceproviderbase');const libPackage=require('../package.json');const defaultPictViewSettings={DefaultRenderable:false,DefaultDestinationAddress:false,DefaultTemplateRecordAddress:false,ViewIdentifier:false,// If this is set to true, when the App initializes this will.
 // After the App initializes, initialize will be called as soon as it's added.
 AutoInitialize:true,AutoInitializeOrdinal:0,// If this is set to true, when the App autorenders (on load) this will.
 // After the App initializes, render will be called as soon as it's added.

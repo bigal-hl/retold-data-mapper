@@ -53,6 +53,29 @@ function _checkRowCount(pAction, pCount)
 	return null;
 }
 
+/**
+ * Build a meadow FilteredTo sort segment from a SortField naming ONE column or a
+ * comma-separated list (e.g. a composite PK). Emits one FSF stanza per column so
+ * the ORDER BY is a total order — a non-unique leading column makes OFFSET
+ * pagination skip/duplicate rows (the ~38% silent loss this guards against). A
+ * single-column SortField is byte-identical to the prior 'FSF~<col>~ASC~0', so
+ * existing single-key callers are unaffected.
+ * @param {string} pSortField - one column name, or 'col1,col2,...'
+ * @return {string} e.g. 'FSF~col1~ASC~0~FSF~col2~ASC~0'; '' when pSortField is falsy
+ */
+function _buildSortFilter(pSortField)
+{
+	if (!pSortField)
+	{
+		return '';
+	}
+	return String(pSortField).split(',')
+		.map((pColumn) => (pColumn.trim()))
+		.filter((pColumn) => (pColumn.length > 0))
+		.map((pColumn) => ('FSF~' + pColumn + '~ASC~0'))
+		.join('~');
+}
+
 let libTabularTransform = null;
 try
 {
@@ -280,7 +303,7 @@ class DataMapperBeaconProvider extends libFableServiceProviderBase
 							// 250K rows). Force ORDER BY <PK> via meadow's filter
 							// FSF directive so paginated reads are deterministic.
 							let tmpSortField = tmpSettings.SortField || ('ID' + tmpEntity);
-							let tmpSortFilter = 'FSF~' + tmpSortField + '~ASC~0';
+							let tmpSortFilter = _buildSortFilter(tmpSortField);
 							let tmpUserFilter = tmpSettings.FilterExpression || '';
 							let tmpCombinedFilter = tmpUserFilter
 								? tmpUserFilter + '~' + tmpSortFilter
@@ -460,8 +483,9 @@ class DataMapperBeaconProvider extends libFableServiceProviderBase
 							let tmpSortField = (tmpSettings.SortField !== undefined) ? tmpSettings.SortField : ('ID' + tmpSourceEntity);
 							let tmpUserFilter = tmpSettings.FilterExpression || '';
 							let tmpUseSortFilter = !!tmpSortField;
+							let tmpSortFilter = tmpUseSortFilter ? _buildSortFilter(tmpSortField) : '';
 							let tmpFullFilter = tmpUseSortFilter
-								? (tmpUserFilter ? tmpUserFilter + '~FSF~' + tmpSortField + '~ASC~0' : 'FSF~' + tmpSortField + '~ASC~0')
+								? (tmpUserFilter ? tmpUserFilter + '~' + tmpSortFilter : tmpSortFilter)
 								: tmpUserFilter;
 
 							if (!tmpSelf._Client || !tmpSourceBeacon || !tmpSourceConn || !tmpSourceEntity
@@ -2639,3 +2663,5 @@ class DataMapperBeaconProvider extends libFableServiceProviderBase
 }
 
 module.exports = DataMapperBeaconProvider;
+// Exposed for unit testing — pure helper, no instance state.
+module.exports._buildSortFilter = _buildSortFilter;
