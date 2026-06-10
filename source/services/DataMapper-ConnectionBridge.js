@@ -2379,6 +2379,8 @@ class DataMapperConnectionBridge extends libFableServiceProviderBase
 						ConnectionHash:   pOperation.SourceConnectionHash || '',
 						Entity:           pOperation.SourceEntity || '',
 						BatchSize:        500,
+						FilterExpression: tmpCfg.FilterExpression || '',
+						SortField:        tmpCfg.SortField || '',
 						AffinityKey:      'data-mapper'
 					  }
 					},
@@ -2518,6 +2520,8 @@ class DataMapperConnectionBridge extends libFableServiceProviderBase
 						ConnectionHash:   pOperation.SourceConnectionHash || '',
 						Entity:           pOperation.SourceEntity || '',
 						BatchSize:        500,
+						FilterExpression: tmpCfg.FilterExpression || '',
+						SortField:        tmpCfg.SortField || '',
 						AffinityKey:      'data-mapper'
 					  }
 					},
@@ -2892,6 +2896,8 @@ class DataMapperConnectionBridge extends libFableServiceProviderBase
 						ConnectionHash:   pOperation.SourceConnectionHash || '',
 						Entity:           pOperation.SourceEntity || '',
 						BatchSize:        500,
+						FilterExpression: tmpCfg.FilterExpression || '',
+						SortField:        tmpCfg.SortField || '',
 						AffinityKey:      'data-mapper'
 					  }
 					},
@@ -3003,6 +3009,8 @@ class DataMapperConnectionBridge extends libFableServiceProviderBase
 						ConnectionHash:   pOperation.SourceConnectionHash || '',
 						Entity:           pOperation.SourceEntity || '',
 						BatchSize:        500,
+						FilterExpression: tmpCfg.FilterExpression || '',
+						SortField:        tmpCfg.SortField || '',
 						AffinityKey:      'data-mapper'
 					  }
 					},
@@ -3123,6 +3131,8 @@ class DataMapperConnectionBridge extends libFableServiceProviderBase
 						ConnectionHash:   pOperation.SourceConnectionHash || '',
 						Entity:           pOperation.SourceEntity || '',
 						BatchSize:        500,
+						FilterExpression: tmpCfg.FilterExpression || '',
+						SortField:        tmpCfg.SortField || '',
 						AffinityKey:      'data-mapper'
 					  }
 					},
