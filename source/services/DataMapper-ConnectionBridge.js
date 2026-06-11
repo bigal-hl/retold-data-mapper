@@ -53,6 +53,23 @@ class DataMapperConnectionBridge extends libFableServiceProviderBase
 		this._Owner = null;
 	}
 
+	/**
+	 * The beacon name this mapper registered with on the mesh — compiled
+	 * operation graphs MUST route transform nodes by this name, never a
+	 * literal: with strict affinity a mismatched name waits forever, and
+	 * without it the node only lands here by capability-fallback accident.
+	 *
+	 * @returns {string}
+	 */
+	_selfBeaconName()
+	{
+		if (this._Owner && this._Owner.options && this._Owner.options.Ultravisor && this._Owner.options.Ultravisor.BeaconName)
+		{
+			return this._Owner.options.Ultravisor.BeaconName;
+		}
+		return 'retold-data-mapper';
+	}
+
 	setOwner(pOwnerService)
 	{
 		this._Owner = pOwnerService;
@@ -130,6 +147,7 @@ class DataMapperConnectionBridge extends libFableServiceProviderBase
 					RemoteUser: ''
 				},
 				AffinityKey: pBeaconName,
+				RequireAffinityMatch: true,
 				TimeoutMs:   30000
 			},
 			(pError, pResult) =>
@@ -183,6 +201,7 @@ class DataMapperConnectionBridge extends libFableServiceProviderBase
 				Action:     'ListConnections',
 				Settings:   {},
 				AffinityKey: CONFIGS_BEACON_NAME,
+				RequireAffinityMatch: true,
 				TimeoutMs:   15000
 			},
 			(pListErr, pResult) =>
@@ -226,6 +245,7 @@ class DataMapperConnectionBridge extends libFableServiceProviderBase
 							Description: 'Auto-provisioned by retold-data-mapper. Hosts OperationConfig + DashboardConfig tables.'
 						},
 						AffinityKey: CONFIGS_BEACON_NAME,
+						RequireAffinityMatch: true,
 						TimeoutMs:   30000
 					},
 					(pCreateErr, pCreateRes) =>
@@ -368,6 +388,7 @@ class DataMapperConnectionBridge extends libFableServiceProviderBase
 				Action:      'ListConnections',
 				Settings:    {},
 				AffinityKey: tmpBeacon,
+				RequireAffinityMatch: true,
 				TimeoutMs:   15000
 			},
 			(pListErr, pListResult) =>
@@ -398,6 +419,7 @@ class DataMapperConnectionBridge extends libFableServiceProviderBase
 							Description: pEntry.Description || `Auto-provisioned by retold-data-mapper bootstrap.`
 						},
 						AffinityKey: tmpBeacon,
+						RequireAffinityMatch: true,
 						TimeoutMs:   30000
 					},
 					(pCreateErr, pCreateRes) =>
@@ -569,6 +591,7 @@ class DataMapperConnectionBridge extends libFableServiceProviderBase
 					SchemaJSON:         pSchema
 				},
 				AffinityKey: CONFIGS_BEACON_NAME,
+				RequireAffinityMatch: true,
 				TimeoutMs:   60000
 			},
 			(pErr, pResult) =>
@@ -588,6 +611,7 @@ class DataMapperConnectionBridge extends libFableServiceProviderBase
 						Action:     'Introspect',
 						Settings:   { IDBeaconConnection: pIDBeaconConnection },
 						AffinityKey: CONFIGS_BEACON_NAME,
+						RequireAffinityMatch: true,
 						TimeoutMs:   30000
 					},
 					(pIntErr) =>
@@ -604,6 +628,7 @@ class DataMapperConnectionBridge extends libFableServiceProviderBase
 									Action:     'EnableEndpoint',
 									Settings:   { IDBeaconConnection: pIDBeaconConnection, TableName: tmpTable },
 									AffinityKey: CONFIGS_BEACON_NAME,
+									RequireAffinityMatch: true,
 									TimeoutMs:   15000
 								},
 								() => fEnableNext());
@@ -780,6 +805,7 @@ class DataMapperConnectionBridge extends libFableServiceProviderBase
 						Action: 'ListConnections',
 						Settings: {},
 						AffinityKey: tmpName,
+						RequireAffinityMatch: true,
 						TimeoutMs: 15000
 					},
 					(pError, pResult) =>
@@ -820,6 +846,7 @@ class DataMapperConnectionBridge extends libFableServiceProviderBase
 						Action: 'ListConnections',
 						Settings: {},
 						AffinityKey: tmpName,
+						RequireAffinityMatch: true,
 						TimeoutMs: 15000
 					},
 					(pListErr, pListResult) =>
@@ -846,6 +873,7 @@ class DataMapperConnectionBridge extends libFableServiceProviderBase
 								Action: 'Introspect',
 								Settings: { IDBeaconConnection: tmpMatch.IDBeaconConnection },
 								AffinityKey: tmpName,
+								RequireAffinityMatch: true,
 								TimeoutMs: 30000
 							},
 							(pIntErr, pIntResult) =>
@@ -886,6 +914,7 @@ class DataMapperConnectionBridge extends libFableServiceProviderBase
 						Action: 'Introspect',
 						Settings: { IDBeaconConnection: tmpBody.IDBeaconConnection },
 						AffinityKey: tmpName,
+						RequireAffinityMatch: true,
 						TimeoutMs: 30000
 					},
 					(pError, pResult) =>
@@ -956,6 +985,7 @@ class DataMapperConnectionBridge extends libFableServiceProviderBase
 							SchemaJSON:         tmpBody.SchemaJSON
 						},
 						AffinityKey: tmpBody.BeaconName,
+						RequireAffinityMatch: true,
 						TimeoutMs:   60000
 					},
 					(pError, pResult) =>
@@ -985,6 +1015,7 @@ class DataMapperConnectionBridge extends libFableServiceProviderBase
 								Action:     'Introspect',
 								Settings:   { IDBeaconConnection: tmpBody.IDBeaconConnection },
 								AffinityKey: tmpBody.BeaconName,
+								RequireAffinityMatch: true,
 								TimeoutMs:   30000
 							},
 							(pIntErr) =>
@@ -1003,6 +1034,7 @@ class DataMapperConnectionBridge extends libFableServiceProviderBase
 											Action:     'EnableEndpoint',
 											Settings:   { IDBeaconConnection: tmpBody.IDBeaconConnection, TableName: tmpTable },
 											AffinityKey: tmpBody.BeaconName,
+											RequireAffinityMatch: true,
 											TimeoutMs:   15000
 										},
 										(pEnErr, pEnRes) =>
@@ -1044,6 +1076,7 @@ class DataMapperConnectionBridge extends libFableServiceProviderBase
 							TableName:          tmpBody.TableName
 						},
 						AffinityKey: tmpBody.BeaconName,
+						RequireAffinityMatch: true,
 						TimeoutMs:   30000
 					},
 					(pError, pResult) =>
@@ -1273,6 +1306,7 @@ class DataMapperConnectionBridge extends libFableServiceProviderBase
 						RemoteUser: ''
 					},
 					AffinityKey: pBeaconName,
+					RequireAffinityMatch: true,
 					TimeoutMs:   30000
 				},
 				(pError, pResult) =>
@@ -2227,7 +2261,8 @@ class DataMapperConnectionBridge extends libFableServiceProviderBase
 						ConnectionHash:   pMapping.SourceConnectionHash || '',
 						Entity:           pMapping.SourceEntity || '',
 						BatchSize:        100,
-						AffinityKey:      'data-mapper'
+						AffinityKey:      this._selfBeaconName(),
+						RequireAffinityMatch: true
 					  }
 					},
 
@@ -2241,7 +2276,8 @@ class DataMapperConnectionBridge extends libFableServiceProviderBase
 					  ],
 					  Data: {
 						MappingConfiguration: tmpMCString,
-						AffinityKey:          'data-mapper'
+						AffinityKey:          this._selfBeaconName(),
+						RequireAffinityMatch: true
 					  }
 					},
 
@@ -2256,7 +2292,8 @@ class DataMapperConnectionBridge extends libFableServiceProviderBase
 					  Data: {
 						Entity:       tmpEntity,
 						GUIDField:    tmpGUIDField,
-						AffinityKey:  'data-mapper'
+						AffinityKey:  this._selfBeaconName(),
+						RequireAffinityMatch: true
 					  }
 					},
 
@@ -2271,7 +2308,8 @@ class DataMapperConnectionBridge extends libFableServiceProviderBase
 						TargetBeaconName: pMapping.TargetBeaconName || '',
 						ConnectionHash:   pMapping.TargetConnectionHash || '',
 						Entity:           tmpEntity,
-						AffinityKey:      'data-mapper'
+						AffinityKey:      this._selfBeaconName(),
+						RequireAffinityMatch: true
 					  }
 					},
 
@@ -2353,7 +2391,8 @@ class DataMapperConnectionBridge extends libFableServiceProviderBase
 						BatchSize:        500,
 						FilterExpression: tmpCfg.FilterExpression || '',
 						SortField:        tmpCfg.SortField || '',
-						AffinityKey:      'data-mapper'
+						AffinityKey:      this._selfBeaconName(),
+						RequireAffinityMatch: true
 					  }
 					},
 
@@ -2379,7 +2418,8 @@ class DataMapperConnectionBridge extends libFableServiceProviderBase
 							Projection:   tmpProjection,
 							Filter:       tmpFilter
 						}),
-						AffinityKey:  'data-mapper'
+						AffinityKey:  this._selfBeaconName(),
+						RequireAffinityMatch: true
 					  }
 					},
 
@@ -2394,7 +2434,8 @@ class DataMapperConnectionBridge extends libFableServiceProviderBase
 					  Data: {
 						Entity:       tmpEntity,
 						GUIDField:    tmpGUIDName,
-						AffinityKey:  'data-mapper'
+						AffinityKey:  this._selfBeaconName(),
+						RequireAffinityMatch: true
 					  }
 					},
 
@@ -2418,7 +2459,8 @@ class DataMapperConnectionBridge extends libFableServiceProviderBase
 						// (existing GUIDs not in the new comprehension) after the
 						// upsert succeeds. Default 'Append' = no purge.
 						ResetMode:        (pOperation.ResetMode === 'Replace') ? 'Replace' : 'Append',
-						AffinityKey:      'data-mapper'
+						AffinityKey:      this._selfBeaconName(),
+						RequireAffinityMatch: true
 					  }
 					},
 
@@ -2494,7 +2536,8 @@ class DataMapperConnectionBridge extends libFableServiceProviderBase
 						BatchSize:        500,
 						FilterExpression: tmpCfg.FilterExpression || '',
 						SortField:        tmpCfg.SortField || '',
-						AffinityKey:      'data-mapper'
+						AffinityKey:      this._selfBeaconName(),
+						RequireAffinityMatch: true
 					  }
 					},
 
@@ -2517,7 +2560,8 @@ class DataMapperConnectionBridge extends libFableServiceProviderBase
 							Filter:            tmpFilter,
 							Solvers:           tmpSolvers
 						}),
-						AffinityKey:  'data-mapper'
+						AffinityKey:  this._selfBeaconName(),
+						RequireAffinityMatch: true
 					  }
 					},
 
@@ -2532,7 +2576,8 @@ class DataMapperConnectionBridge extends libFableServiceProviderBase
 					  Data: {
 						Entity:       tmpEntity,
 						GUIDField:    tmpGUIDName,
-						AffinityKey:  'data-mapper'
+						AffinityKey:  this._selfBeaconName(),
+						RequireAffinityMatch: true
 					  }
 					},
 
@@ -2550,7 +2595,8 @@ class DataMapperConnectionBridge extends libFableServiceProviderBase
 						GUIDName:         tmpGUIDName,
 						Concurrency:      Math.max(1, Math.min(5, pOperation.Concurrency || 5)),
 						ResetMode:        (pOperation.ResetMode === 'Replace') ? 'Replace' : 'Append',
-						AffinityKey:      'data-mapper'
+						AffinityKey:      this._selfBeaconName(),
+						RequireAffinityMatch: true
 					  }
 					},
 
@@ -2644,7 +2690,8 @@ class DataMapperConnectionBridge extends libFableServiceProviderBase
 						// row. Same trick the typed-op compilers use for the
 						// Aggregate/Histogram/Intersect Settings.)
 						OperationConfiguration: JSON.stringify({ Projection: tmpProjection, GUIDTemplate: tmpGUIDTemplate }),
-						AffinityKey:          'data-mapper'
+						AffinityKey:          this._selfBeaconName(),
+						RequireAffinityMatch: true
 					  }
 					},
 
@@ -2728,7 +2775,8 @@ class DataMapperConnectionBridge extends libFableServiceProviderBase
 						GUIDName:             tmpGUIDName,
 						BatchSize:            tmpCfg.BatchSize || 500,
 						OperationConfiguration: JSON.stringify(tmpBundledCfg),
-						AffinityKey:          'data-mapper'
+						AffinityKey:          this._selfBeaconName(),
+						RequireAffinityMatch: true
 					  }
 					},
 
@@ -2813,7 +2861,8 @@ class DataMapperConnectionBridge extends libFableServiceProviderBase
 						GUIDName:             tmpGUIDName,
 						BatchSize:            tmpCfg.BatchSize || 500,
 						OperationConfiguration: JSON.stringify(tmpBundledCfg),
-						AffinityKey:          'data-mapper'
+						AffinityKey:          this._selfBeaconName(),
+						RequireAffinityMatch: true
 					  }
 					},
 
@@ -2870,7 +2919,8 @@ class DataMapperConnectionBridge extends libFableServiceProviderBase
 						BatchSize:        500,
 						FilterExpression: tmpCfg.FilterExpression || '',
 						SortField:        tmpCfg.SortField || '',
-						AffinityKey:      'data-mapper'
+						AffinityKey:      this._selfBeaconName(),
+						RequireAffinityMatch: true
 					  }
 					},
 
@@ -2884,7 +2934,8 @@ class DataMapperConnectionBridge extends libFableServiceProviderBase
 					  ],
 					  Data: {
 						OperationConfiguration: JSON.stringify(tmpCfg),
-						AffinityKey:            'data-mapper'
+						AffinityKey:            this._selfBeaconName(),
+						RequireAffinityMatch: true
 					  }
 					},
 
@@ -2919,7 +2970,8 @@ class DataMapperConnectionBridge extends libFableServiceProviderBase
 						// (existing GUIDs not in the new comprehension) after the
 						// upsert succeeds. Default 'Append' = no purge.
 						ResetMode:        (pOperation.ResetMode === 'Replace') ? 'Replace' : 'Append',
-						AffinityKey:      'data-mapper'
+						AffinityKey:      this._selfBeaconName(),
+						RequireAffinityMatch: true
 					  }
 					},
 
@@ -2983,7 +3035,8 @@ class DataMapperConnectionBridge extends libFableServiceProviderBase
 						BatchSize:        500,
 						FilterExpression: tmpCfg.FilterExpression || '',
 						SortField:        tmpCfg.SortField || '',
-						AffinityKey:      'data-mapper'
+						AffinityKey:      this._selfBeaconName(),
+						RequireAffinityMatch: true
 					  }
 					},
 
@@ -3029,7 +3082,8 @@ class DataMapperConnectionBridge extends libFableServiceProviderBase
 						// (existing GUIDs not in the new comprehension) after the
 						// upsert succeeds. Default 'Append' = no purge.
 						ResetMode:        (pOperation.ResetMode === 'Replace') ? 'Replace' : 'Append',
-						AffinityKey:      'data-mapper'
+						AffinityKey:      this._selfBeaconName(),
+						RequireAffinityMatch: true
 					  }
 					},
 
@@ -3105,7 +3159,8 @@ class DataMapperConnectionBridge extends libFableServiceProviderBase
 						BatchSize:        500,
 						FilterExpression: tmpCfg.FilterExpression || '',
 						SortField:        tmpCfg.SortField || '',
-						AffinityKey:      'data-mapper'
+						AffinityKey:      this._selfBeaconName(),
+						RequireAffinityMatch: true
 					  }
 					},
 
@@ -3121,7 +3176,8 @@ class DataMapperConnectionBridge extends libFableServiceProviderBase
 						ConnectionHash:   tmpRelatedConn,
 						Entity:           tmpRelatedEntity,
 						BatchSize:        500,
-						AffinityKey:      'data-mapper'
+						AffinityKey:      this._selfBeaconName(),
+						RequireAffinityMatch: true
 					  }
 					},
 
@@ -3168,7 +3224,8 @@ class DataMapperConnectionBridge extends libFableServiceProviderBase
 						// (existing GUIDs not in the new comprehension) after the
 						// upsert succeeds. Default 'Append' = no purge.
 						ResetMode:        (pOperation.ResetMode === 'Replace') ? 'Replace' : 'Append',
-						AffinityKey:      'data-mapper'
+						AffinityKey:      this._selfBeaconName(),
+						RequireAffinityMatch: true
 					  }
 					},
 
@@ -3734,6 +3791,7 @@ class DataMapperConnectionBridge extends libFableServiceProviderBase
 				Action:     'ListConnections',
 				Settings:   {},
 				AffinityKey: tmpBeacon,
+				RequireAffinityMatch: true,
 				TimeoutMs:   15000
 			},
 			(pListErr, pListResult) =>
@@ -3756,6 +3814,7 @@ class DataMapperConnectionBridge extends libFableServiceProviderBase
 						Action:     'Introspect',
 						Settings:   { IDBeaconConnection: tmpMatch.IDBeaconConnection },
 						AffinityKey: tmpBeacon,
+						RequireAffinityMatch: true,
 						TimeoutMs:   30000
 					},
 					(pIntErr, pIntResult) =>

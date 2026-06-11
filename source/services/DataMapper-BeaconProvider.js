@@ -522,6 +522,7 @@ class DataMapperBeaconProvider extends libFableServiceProviderBase
 									Action: 'Introspect',
 									Settings: { IDBeaconConnection: tmpConnID },
 									AffinityKey: tmpBeaconName,
+									RequireAffinityMatch: true,
 									TimeoutMs: 30000
 								},
 								(pError, pResult) =>
@@ -704,6 +705,7 @@ class DataMapperBeaconProvider extends libFableServiceProviderBase
 										Action: 'Request',
 										Settings: { Method: 'GET', Path: tmpPath, Body: '', RemoteUser: '' },
 										AffinityKey: tmpBeaconName,
+										RequireAffinityMatch: true,
 										TimeoutMs: 30000
 									},
 									(pError, pResult) =>
@@ -908,6 +910,7 @@ class DataMapperBeaconProvider extends libFableServiceProviderBase
 										Action:      'Request',
 										Settings:    { Method: 'GET', Path: tmpReadPath, Body: '', RemoteUser: '' },
 										AffinityKey: tmpSourceBeacon,
+										RequireAffinityMatch: true,
 										TimeoutMs:   60000
 									},
 									(pReadErr, pReadResult) =>
@@ -957,6 +960,7 @@ class DataMapperBeaconProvider extends libFableServiceProviderBase
 												Action:      'Request',
 												Settings:    { Method: 'PUT', Path: tmpWritePath, Body: JSON.stringify(tmpProjected), RemoteUser: '' },
 												AffinityKey: tmpTargetBeacon,
+												RequireAffinityMatch: true,
 												TimeoutMs:   120000
 											},
 											(pWriteErr, pWriteResult) =>
@@ -1125,6 +1129,7 @@ class DataMapperBeaconProvider extends libFableServiceProviderBase
 									Action:      'ListConnections',
 									Settings:    {},
 									AffinityKey: tmpSourceBeacon,
+									RequireAffinityMatch: true,
 									TimeoutMs:   30000
 								},
 								(pListErr, pListResult) =>
@@ -1182,6 +1187,7 @@ class DataMapperBeaconProvider extends libFableServiceProviderBase
 												Action:      'Join',
 												Settings:    { IDBeaconConnection: tmpConnID, JoinSpec: tmpJoinSpec },
 												AffinityKey: tmpSourceBeacon,
+												RequireAffinityMatch: true,
 												TimeoutMs:   600000
 											},
 											(pJoinErr, pJoinResult) =>
@@ -1255,6 +1261,7 @@ class DataMapperBeaconProvider extends libFableServiceProviderBase
 														Action:      'Request',
 														Settings:    { Method: 'PUT', Path: tmpWritePath, Body: JSON.stringify(tmpRows), RemoteUser: '' },
 														AffinityKey: tmpTargetBeacon,
+														RequireAffinityMatch: true,
 														TimeoutMs:   120000
 													},
 													(pWriteErr, pWriteResult) =>
@@ -1399,6 +1406,7 @@ class DataMapperBeaconProvider extends libFableServiceProviderBase
 									Action:      'ListConnections',
 									Settings:    {},
 									AffinityKey: tmpSourceBeacon,
+									RequireAffinityMatch: true,
 									TimeoutMs:   30000
 								},
 								(pListErr, pListResult) =>
@@ -1461,6 +1469,7 @@ class DataMapperBeaconProvider extends libFableServiceProviderBase
 											Action:      'Aggregate',
 											Settings:    { IDBeaconConnection: tmpConnID, AggregateSpec: tmpAggSpec },
 											AffinityKey: tmpSourceBeacon,
+											RequireAffinityMatch: true,
 											TimeoutMs:   1800000
 										},
 										(pAggErr, pAggResult) =>
@@ -1528,6 +1537,7 @@ class DataMapperBeaconProvider extends libFableServiceProviderBase
 														Action:      'Request',
 														Settings:    { Method: 'PUT', Path: tmpWritePath, Body: JSON.stringify(tmpChunk), RemoteUser: '' },
 														AffinityKey: tmpTargetBeacon,
+														RequireAffinityMatch: true,
 														TimeoutMs:   120000
 													},
 													(pWriteErr, pWriteResult) =>
@@ -1702,6 +1712,7 @@ class DataMapperBeaconProvider extends libFableServiceProviderBase
 											RemoteUser: ''
 										},
 										AffinityKey: tmpBeaconName,
+										RequireAffinityMatch: true,
 										TimeoutMs:   30000
 									},
 									(pErr, pResult) =>
@@ -1922,6 +1933,7 @@ class DataMapperBeaconProvider extends libFableServiceProviderBase
 												Action:     'Request',
 												Settings: { Method: 'GET', Path: tmpListPath(tmpPage, 500), Body: '', RemoteUser: '' },
 												AffinityKey: tmpBeaconName,
+												RequireAffinityMatch: true,
 												TimeoutMs: 30000
 											},
 											(pErr, pResult) =>
@@ -1995,6 +2007,7 @@ class DataMapperBeaconProvider extends libFableServiceProviderBase
 													Action:     'Request',
 													Settings: { Method: 'DELETE', Path: tmpDelPath, Body: '', RemoteUser: '' },
 													AffinityKey: tmpBeaconName,
+													RequireAffinityMatch: true,
 													TimeoutMs: 30000
 												},
 												(pErr, pResult) =>
@@ -2051,6 +2064,7 @@ class DataMapperBeaconProvider extends libFableServiceProviderBase
 												RemoteUser: ''
 											},
 											AffinityKey: tmpBeaconName,
+											RequireAffinityMatch: true,
 											TimeoutMs:   60000
 										},
 										(pErr, pResult) =>

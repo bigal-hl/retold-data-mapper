@@ -23,7 +23,9 @@ function baseOp(pType, pCfg)
 
 function compile(pMethod, pOp)
 {
-	return libConnectionBridge.prototype[pMethod].call({}, pOp);
+	// Object.create the prototype so compiler-internal method calls
+	// (e.g. _selfBeaconName) resolve; no constructor state is needed.
+	return libConnectionBridge.prototype[pMethod].call(Object.create(libConnectionBridge.prototype), pOp);
 }
 
 function pullNode(pGraph, pHash)

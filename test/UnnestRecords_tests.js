@@ -170,7 +170,7 @@ suite
 					TargetBeaconName: 'target-databeacon', TargetConnectionHash: 'target-main', TargetTable: 'MoistureReading',
 					OperationConfiguration: CFG
 				};
-				function compile(pOp) { return libConnectionBridge.prototype._compileUnnestToOperation.call({}, pOp); }
+				function compile(pOp) { return libConnectionBridge.prototype._compileUnnestToOperation.call(Object.create(libConnectionBridge.prototype), pOp); }
 
 				test('emits a Pull -> Unnest -> Comprehend -> Write graph', function ()
 				{
@@ -223,7 +223,7 @@ suite
 					TargetBeaconName: 't', TargetConnectionHash: 'tc', TargetTable: 'MoistureReading',
 					OperationConfiguration: CFG
 				};
-				function validate(pOp) { return libConnectionBridge.prototype._validateOperationConfiguration.call({}, pOp); }
+				function validate(pOp) { return libConnectionBridge.prototype._validateOperationConfiguration.call(Object.create(libConnectionBridge.prototype), pOp); }
 
 				test('accepts a valid Unnest op (returns null)', function ()
 				{
