@@ -256,6 +256,34 @@ suite
 
 				test
 				(
+					'CollectDistinct / CountDistinct build provenance columns (IDDocuments)',
+					function ()
+					{
+						let tmpRecs = [
+							{ Day: 'D1', IDDocument: 900 }, { Day: 'D1', IDDocument: 901 }, { Day: 'D1', IDDocument: 900 },
+							{ Day: 'D2', IDDocument: 903 }
+						];
+						let tmpOut = invoke(_ctx.handlers['DataMapperTransform:AggregateRecords'],
+							{ Records: tmpRecs,
+							  OperationConfiguration:
+							  {
+								Entity: 'X', GroupBy: ['Day'],
+								Aggregates: [
+									{ Source: 'IDDocument', Function: 'CollectDistinct', As: 'IDDocuments' },
+									{ Source: 'IDDocument', Function: 'CountDistinct',   As: 'IDDocumentCount' }
+								]
+							  } });
+						let tmpD1 = tmpOut.Records.find(r => r.Day === 'D1');
+						libAssert.strictEqual(tmpD1.IDDocuments, '900,901', 'distinct CSV, first-seen order');
+						libAssert.strictEqual(tmpD1.IDDocumentCount, 2);
+						let tmpD2 = tmpOut.Records.find(r => r.Day === 'D2');
+						libAssert.strictEqual(tmpD2.IDDocuments, '903');
+						libAssert.strictEqual(tmpD2.IDDocumentCount, 1);
+					}
+				);
+
+				test
+				(
 					'Sum / Count / Mean / Min / Max compute correctly per group',
 					function ()
 					{

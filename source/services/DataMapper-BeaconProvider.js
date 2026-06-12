@@ -2534,7 +2534,7 @@ class DataMapperBeaconProvider extends libFableServiceProviderBase
 
 					'AggregateRecords':
 					{
-						Description: 'Group records by GroupBy keys, compute aggregates (Sum / Count / Mean / Min / Max) per group, project a deterministic GUID per group. Output is one record per unique GroupBy combination, with columns = GroupBy ∪ Aggregates.As ∪ GUID.',
+						Description: 'Group records by GroupBy keys, compute aggregates (Sum / Count / Mean / Min / Max / CollectDistinct / CountDistinct) per group, project a deterministic GUID per group. Output is one record per unique GroupBy combination, with columns = GroupBy ∪ Aggregates.As ∪ GUID.',
 						SettingsSchema:
 						[
 							{ Name: 'Records',                DataType: 'Array',  Required: true, Description: 'Source records (typically from upstream PullRecords).' },
@@ -2635,6 +2635,13 @@ class DataMapperBeaconProvider extends libFableServiceProviderBase
 											break;
 										case 'max':
 											tmpAggValue = tmpVals.length === 0 ? null : tmpVals.reduce((m, v) => Number(v) > m ? Number(v) : m, Number(tmpVals[0]));
+											break;
+										case 'collectdistinct':
+											// Distinct values joined as CSV, first-seen order
+											tmpAggValue = Array.from(new Set(tmpVals.map((v) => String(v)))).join(',');
+											break;
+										case 'countdistinct':
+											tmpAggValue = new Set(tmpVals.map((v) => String(v))).size;
 											break;
 										default:
 											tmpAggValue = null;
@@ -2794,6 +2801,13 @@ class DataMapperBeaconProvider extends libFableServiceProviderBase
 											break;
 										case 'max':
 											tmpAggValue = tmpVals.length === 0 ? null : tmpVals.reduce((m, v) => Number(v) > m ? Number(v) : m, Number(tmpVals[0]));
+											break;
+										case 'collectdistinct':
+											// Distinct values joined as CSV, first-seen order
+											tmpAggValue = Array.from(new Set(tmpVals.map((v) => String(v)))).join(',');
+											break;
+										case 'countdistinct':
+											tmpAggValue = new Set(tmpVals.map((v) => String(v))).size;
 											break;
 										default:
 											tmpAggValue = null;
